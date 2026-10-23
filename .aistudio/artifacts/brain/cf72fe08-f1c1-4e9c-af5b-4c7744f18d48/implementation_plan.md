@@ -1,52 +1,60 @@
-# Multi-Driver Enclosure Support & Passive Crossover Network Designer
+# Advanced Acoustic Simulation, Port Aerodynamics & Material Cost Calculator
 
-This architectural blueprint outlines the expansion of ResonanceCAD to support multi-driver loudspeaker configurations (2-Way, 3-Way, and MTM / D'Appolito vertical driver stacks) alongside a complete passive crossover network calculation engine (1st to 4th order Linkwitz-Riley and Butterworth filters with L-Pad attenuation), accompanied by real-time 3D procedural baffle cutouts and multi-component crossover PCB visualization.
+This architectural blueprint outlines the integration of a live acoustic simulation module displaying amplitude vs. frequency curves alongside the 3D CAD viewport, an advanced aerodynamic port engine supporting slot ports and flared aeroports with chuffing prevention, and a custom material density and unit cost calculator for enclosure budgeting.
 
 ## User Review & Critical Decisions
 
-> [!IMPORTANT] 
-> Based on your Phase 1 selections, the system architecture and 3D modeling pipelines will be configured with the following confirmed choices:
+> [!IMPORTANT]
+> Based on your Phase 1 selections, the acoustic and economic simulation systems will be configured with the following confirmed parameters:
 
-- **Confirmed Decision 1: Driver Configuration Layout**: MTM (Midwoofer-Tweeter-Midwoofer / D'Appolito) and 2-Way / 3-Way Vertical Driver Stacks with independent driver assignment, mounting rebates, and acoustic volume sharing.
-- **Confirmed Decision 2: Crossover Calculation Engine**: Comprehensive Passive Crossover Network Designer calculating component values for 1st, 2nd, 3rd, and 4th Order Linkwitz-Riley and Butterworth high-pass, low-pass, and band-pass filters, including impedance compensation (Zobel networks) and L-Pad resistor attenuators.
-- **Confirmed Decision 3: 3D Visualization & PCB CAD**: Real-time 3D procedural baffle rendering with stacked multi-driver rebates and through-holes, combined with a detailed rear crossover PCB featuring 3D copper inductors, film capacitors, ceramic resistors, and binding posts.
+- **Confirmed Decision 1: Port Turbulence & Chuffing Threshold**: Standard Pro Audio threshold ($v_p < 17\text{ m/s}$) with automated flare radius calculation ($r_f$) and minimum port area recommendation based on driver volume displacement ($V_d = S_d \times X_{\text{max}}$) and tuning frequency ($F_b$).
+- **Confirmed Decision 2: Material Cost & Weight Calculation**: User-configurable material density ($\text{kg/m}^3$) and cost per unit area ($\text{\$/m}^2$ and $\text{\$/sq.ft}$), factoring in an optional shop cutting waste percentage (e.g. 10–20% kerf and trim allowance).
+- **Confirmed Decision 3: Live Simulation Display**: A dedicated, dockable Acoustic Simulation Panel situated directly alongside the 3D CAD viewport, enabling real-time curve recalculation as enclosure parameters, port dimensions, or materials are adjusted.
 
 ---
 
 ## 1. Overview & Core Concept
 
-**ResonanceCAD Expansion** transforms the single-driver enclosure designer into a multi-transducer loudspeaker workstation. Users can configure 2-Way (Tweeter + Woofer), 3-Way (Tweeter + Midrange + Woofer), and MTM (D'Appolito) driver arrangements, assign specific driver models or custom T/S parameters to each band, and automatically calculate precise passive crossover filter networks.
-
-### Key Capabilities
-- **Multi-Driver Baffle Stacks**: Dynamic vertical baffle layout positioning Tweeter, Midrange, and Dual Woofers with center-to-center acoustic spacing calculations to prevent lobing.
-- **Passive Crossover Designer**: Full filter math for Butterworth and Linkwitz-Riley alignments ($6\text{ dB/oct}$ up to $24\text{ dB/oct}$) generating exact inductor ($m\text{H}$), capacitor ($\mu\text{F}$), and resistor ($\Omega$) values, complete with interactive schematic diagrams and total system frequency response sum.
-- **3D Procedural Baffle & Crossover PCB**: Real-time Three.js geometry generating multi-hole front baffles, individual driver motors, and an expanded crossover PCB on the rear panel reflecting the exact calculated filter components.
+This feature set extends ResonanceCAD from a design tool into an engineering and fabrication workstation:
+1. **Interactive Acoustic Simulation Module**: Computes and renders high-resolution Amplitude vs. Frequency (SPL transfer function in dB), Cone Excursion (mm), and Port Air Velocity (m/s) in an interactive split-view panel beside the 3D CAD model.
+2. **Advanced Aerodynamic Port Engine**:
+   - **Flared Aeroports**: Computes physical tube length accounting for bellmouth flare end-correction:
+     $$\Delta L = 2 \times 0.732 \cdot r_0 \times \left(1 + 0.6 \cdot \frac{r_f}{r_0}\right)$$
+   - **Slot Ports**: Handles custom slot width ($W_s$) and height ($H_s$), computing equivalent hydraulic diameter ($D_h$) and friction boundary layer effects.
+   - **Turbulence Prevention**: Real-time evaluation of Reynolds number and peak air velocity at user-defined input power:
+     $$v_p = \frac{2\pi \cdot F_b \cdot V_d}{A_{\text{port}}}$$
+3. **Custom Material Density & Cost Estimator**:
+   - Allows users to define or override the density ($\text{kg/m}^3$) and unit cost ($\text{\$/m}^2$) for Baltic Birch, MDF, Marine Ply, or custom composites.
+   - Computes total board surface area, gross board area with waste factor, estimated dry enclosure mass, and estimated fabrication raw material cost ($).
+4. **3D Airflow Interference & Proximity Stress Overlay**:
+   - Visualizes acoustic and fluid-dynamic proximity stress in the 3D CAD viewer when ports are placed near driver magnets or window matrix bracing.
+   - Employs a continuous **red-to-yellow gradient** ($d \le 18\text{mm}$: Critical Choke / Red, $18-45\text{mm}$: Boundary Drag / Orange, $45-75\text{mm}$: Proximity Alert / Yellow, $> 75\text{mm}$: Laminar Safe).
+   - Generates a parametric 3D volumetric intake envelope mesh with vertex-colored stress gradients, concentric isobar rings, and obstacle halo rings around driver magnets and window bracing struts.
+   - Features a floating HUD legend in the 3D viewport with an on/off toggle and real-time clearance telemetry.
 
 ---
 
 ## 2. User Experience & Visual Design
 
 ### User Flow
-1. **System Topology Selection**: The user selects the speaker configuration (2-Way, 3-Way, MTM, or Single Driver) in the "Acoustics & Alignment" tab.
-2. **Driver Assignment**: Individual drivers are chosen for each passband (e.g. Scan-Speak Tweeter + Dual Dayton Audio Woofers).
-3. **Crossover Design Tab**: A dedicated Crossover Network tab allows configuring crossover frequencies ($f_{c1}$, $f_{c2}$), filter slope orders (1st, 2nd, 3rd, 4th order), alignment type (Linkwitz-Riley vs Butterworth), and driver attenuation (L-Pad dB offset).
-4. **3D Interactive CAD**: The central 3D viewport immediately updates to show stacked driver cutouts, aligned motor structures, and a populated crossover PCB on the rear panel.
-5. **Combined SPL Response**: The frequency response chart displays individual passband transfer functions (Tweeter high-pass, Midrange band-pass, Woofer low-pass) and the phase-aligned total acoustic sum.
+1. **Side-by-Side Acoustic Simulation**: The user can toggle a "Live Simulation" side panel on the right side of the 3D CAD viewport. Dragging cabinet dimensions or tuning frequency immediately recalculates the SPL curve, F3 cutoff point, and air velocity trace.
+2. **Port Aerodynamics Tuning**: In the "Acoustics & Alignment" dock tab, users switch between "Flared Round Tube" and "Slot Port (Floor/Shelf)". Sliders allow adjusting flare radius ($r_f$) or slot dimensions ($W_s \times H_s$), with a live indicator showing air velocity and laminar/turbulent status.
+3. **Material & Cost Customizer**: In the "Cabinet & Wood" dock tab, an interactive material spec card displays density ($\text{kg/m}^3$), unit cost ($\text{\$/m}^2$), and a waste factor slider. Live totals appear in the top telemetry bar: Cabinet Mass ($\text{kg} / \text{lbs}$) and Material Cost ($\text{\$USD}$).
 
 ### Visual Identity
-- **Dark Studio Monitor Aesthetic**: Deep matte slate canvas (`#0c0e12`), titanium borders (`#1e2430`), phosphor amber and cyan measurement accents (`#38bdf8`, `#f59e0b`, `#10b981`).
-- **Tabular & Telemetry Precision**: Monospace metrics (`tabular-nums`) displaying crossover component values, DC resistance, component wattage ratings, and driver center-to-center distances.
+- **Matte Dark Studio Palette**: Slate canvas (`#0c0e12`), cyan measurement traces (`#38bdf8`), amber cutoff indicators (`#f59e0b`), and emerald safe velocity indicators (`#10b981`).
+- **Tabular Precision**: Monospace figures with units for air velocity ($m/s$), Reynolds index, sheet square footage, and currency.
 
 ---
 
 ## 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1: Acoustic Volume Sharing vs Internal Sub-Chambers**
-  - *Approach*: Midrange drivers are automatically assigned an isolated internal cylindrical rear enclosure or sealed sub-box volume, while woofers share the primary cabinet volume ($V_b$).
-  - *Why*: Prevents woofer back-wave pressure modulation from distorting delicate midrange diaphragms.
-- **Decision 2: Crossover Transfer Function Summation**
-  - *Approach*: Calculates complex vector sum of individual driver high-pass and low-pass acoustic/electrical transfer functions, accounting for phase reversals in 2nd order Butterworth filters ($180^\circ$ phase shift).
-  - *Why*: Accurately predicts crossover notch or dip near the crossover frequency.
+- **Decision 1: Dockable Side-by-Side Panel vs Modal Popup**
+  - *Approach*: Implement a collapsible split-screen simulation panel that slides in from the right edge of the 3D viewport, while keeping the full-screen modal available for detailed inspection.
+  - *Why*: Allows simultaneous visual inspection of 3D geometry changes and acoustic frequency response curves.
+- **Decision 2: Flared Port Acoustic End-Correction**
+  - *Approach*: Apply the Small-Margolis acoustic flare formula, which shortens the physical tube length as flare radius increases to maintain exact target $F_b$.
+  - *Why*: Prevents real-world enclosures from tuning lower than intended due to unmodeled flare termination mass.
 
 ---
 
@@ -58,63 +66,50 @@ This architectural blueprint outlines the expansion of ResonanceCAD to support m
 ├────────────────────────────────────────────────────────────────────────┤
 │                                                                        │
 │  ┌──────────────────────┐   ┌───────────────────────────────────────┐  │
-│  │  SYSTEM TOPOLOGY     │   │  ACOUSTIC & CROSSOVER ENGINE          │  │
-│  │  • Single / MTM      │──►│  • Combined Vb / Port Calculations    │  │
-│  │  • 2-Way / 3-Way     │   │  • Passive Crossover Filter Formulas  │  │
-│  └──────────────────────┘   │  • L-Pad & Zobel Network Math         │  │
+│  │ MATERIAL & COST SPEC │   │ ACOUSTIC AERODYNAMICS ENGINE          │  │
+│  │ • Density (kg/m³)    │──►│ • Net Vb & Helmholtz Tuning Fb        │  │
+│  │ • Unit Cost ($/m²)   │   │ • Flared Aeroport End-Correction      │  │
+│  │ • Waste Factor (%)   │   │ • Slot Port Hydraulic Area (Dh)       │  │
+│  └──────────────────────┘   │ • Air Velocity & Chuffing Diagnostic  │  │
 │                             └───────────────────┬───────────────────┘  │
 │                                                 │                      │
 │                                                 ▼                      │
 │                             ┌───────────────────────────────────────┐  │
-│                             │  MECHANICAL & CUT LIST GENERATOR      │  │
-│                             │  • Multi-Hole Baffle Geometry         │  │
-│                             │  • Midrange Sealed Sub-Chamber        │  │
-│                             │  • Crossover PCB Component List       │  │
+│                             │ LIVE ACOUSTIC SIMULATION MODULE       │  │
+│                             │ • Multi-Curve SPL Graph (10Hz-20kHz)  │  │
+│                             │ • Cone Excursion & Group Delay        │  │
+│                             │ • Real-time Peak Air Velocity Curve   │  │
 │                             └───────────────────┬───────────────────┘  │
 │                                                 │                      │
 │                                                 ▼                      │
 │  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  INTERACTIVE 3D CAD VIEWPORT & INSPECTOR (THREE.JS)               │  │
-│  │  • Multi-Driver Baffle Cutouts & Chamfers                        │  │
-│  │  • Staggered Motor Structures & Basket Legs                      │  │
-│  │  • Populated FR4 PCB with Inductors, Capacitors & Resistors      │  │
+│  │ SPLIT WORKBENCH VIEWPORT                                         │  │
+│  │ • Left: Procedural 3D CAD with Flared Port & Multi-Drivers       │  │
+│  │ • Right: Docked Live Acoustic Simulation Graph Panel             │  │
+│  │ • Top: Live Telemetry (Net Vb, Fb, F3, Air Vel, Mass, Cost $)   │  │
 │  └──────────────────────────────────────────────────────────────────┘  │
 │                                                                        │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Data Model Additions
+### Data Model Updates (`src/types/loudspeaker.ts`)
 
 ```typescript
-export type SystemTopology = 'single' | 'two_way' | 'three_way' | 'mtm';
-
-export type FilterType = 'butterworth' | 'linkwitz_riley';
-export type FilterOrder = 1 | 2 | 3 | 4; // 6, 12, 18, 24 dB/oct
-
-export interface DriverAssignment {
-  role: 'tweeter' | 'midrange' | 'woofer';
-  driver: DriverPreset;
-  quantity: number;
-  impedanceOhm: number;
-  splSensitivityDb: number;
-  attenuationDb: number; // L-Pad setting
+export interface MaterialPricingConfig {
+  costPerSquareMeter: number; // in $/m²
+  wastePercentage: number; // cutting loss, e.g. 15%
 }
 
-export interface CrossoverBandConfig {
-  crossoverFreqHz: number;
-  filterOrder: FilterOrder;
-  filterType: FilterType;
-  hasZobelNetwork: boolean;
-  hasLPad: boolean;
+export interface FlaredPortConfig {
+  flareRadiusMm: number; // bellmouth flare radius (typically 12-25mm)
+  isDoubleFlared: boolean; // flare at both ends vs exit only
 }
 
-export interface CrossoverNetworkResult {
-  lowPassComponents: { name: string; type: 'inductor' | 'capacitor'; value: number; unit: string }[];
-  highPassComponents: { name: string; type: 'inductor' | 'capacitor'; value: number; unit: string }[];
-  bandPassComponents?: { name: string; type: 'inductor' | 'capacitor'; value: number; unit: string }[];
-  lpadResistors?: { rSeriesOhm: number; rParallelOhm: number };
-  zobelNetwork?: { rZobelOhm: number; cZobelUf: number };
-  schematicSVG: string;
+export interface MaterialCostResult {
+  netSurfaceAreaM2: number;
+  grossSurfaceAreaM2: number; // with waste factor
+  totalCostUsd: number;
+  totalDryWeightKg: number;
 }
 ```
 
@@ -122,9 +117,19 @@ export interface CrossoverNetworkResult {
 
 ## 5. Execution Steps
 
-1. **Type Definitions**: Update `loudspeaker.ts` with multi-driver topology, crossover configuration, and filter calculation result interfaces.
-2. **Crossover Calculation Service (`/src/services/crossoverEngine.ts`)**: Implement exact Linkwitz-Riley ($Q=0.5$) and Butterworth ($Q=0.707$) equations for 1st through 4th order networks, L-Pad attenuation math, Zobel impedance equalization ($R_z = 1.25 \times R_e$, $C_z = L_{ev} / R_z^2$), and individual passband SPL summation.
-3. **Multi-Driver Baffle & Procedural 3D Geometry**: Update `AcousticCADViewer.tsx` to generate multi-hole extruded front baffles (e.g. MTM layout or 3-Way stack), render multiple driver assemblies with proportional scale, and construct a populated crossover PCB on the rear panel with 3D copper coil cylinders, capacitor blocks, and ceramic resistor bricks.
-4. **UI Expansion**: Update `ControlDock.tsx` with a dedicated "Crossover Network Designer" tab, driver assignment controls per passband, and interactive schematic view.
-5. **Cut List & Workshop Spec Updates**: Expand `cutlistGenerator.ts` to include multi-driver cutout rebates, midrange enclosure dividers, and crossover bill of materials.
-6. **Verification & Testing**: Execute `node --test` unit tests, compile applet, and verify 3D multi-driver rendering via Playwright browser inspection.
+1. **Type & Data Model Updates**: Add `MaterialPricingConfig`, `FlaredPortConfig`, and `MaterialCostResult` to `src/types/loudspeaker.ts`.
+2. **Acoustic & Aerodynamic Engine Expansion (`src/services/acousticEngine.ts`)**:
+   - Implement flared port end-correction math and slot port hydraulic diameter formulas.
+   - Calculate port air velocity curve vs. frequency.
+   - Calculate material cost and weight with user-defined density and unit pricing.
+3. **Live Acoustic Simulation Panel (`src/components/LiveSimulationPanel.tsx`)**:
+   - Create a dockable side panel beside the 3D viewport displaying real-time SPL amplitude vs. frequency, F3 cutoff marker, and air velocity threshold bar.
+4. **3D Port Geometry Update (`src/components/AcousticCADViewer.tsx`)**:
+   - Procedurally render flared bellmouth rims matching user-selected flare radius ($r_f$) and slot port entry/exit flares.
+5. **UI & Control Dock Integration (`src/components/ControlDock.tsx`, `src/components/TopHeader.tsx`, `src/App.tsx`)**:
+   - Add density and unit cost sliders/inputs to the Cabinet & Wood tab.
+   - Add total cost indicator to the top telemetry header.
+   - Add toggle button for the side-by-side Live Simulation panel.
+6. **Testing & Verification**:
+   - Update unit test suite in `src/services/acousticEngine.test.ts` to test flare end-correction, slot air velocity, and material cost formulas.
+   - Verify with `compile_applet`, `lint_applet`, and visual browser captures via Playwright.

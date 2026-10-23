@@ -152,3 +152,96 @@ export function createPCBTexture(): THREE.CanvasTexture {
   texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
 }
+
+export function createPolyureaTexture(baseColorHex = '#1a1d20'): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = baseColorHex;
+  ctx.fillRect(0, 0, 512, 512);
+
+  const imgData = ctx.getImageData(0, 0, 512, 512);
+  const data = imgData.data;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const grain = Math.random();
+    let noise = 0;
+    if (grain > 0.85) {
+      noise = 45 + Math.random() * 55;
+    } else if (grain < 0.2) {
+      noise = -30 - Math.random() * 35;
+    } else {
+      noise = (Math.random() - 0.5) * 15;
+    }
+
+    data[i] = Math.min(255, Math.max(0, data[i] + noise));
+    data[i + 1] = Math.min(255, Math.max(0, data[i + 1] + noise));
+    data[i + 2] = Math.min(255, Math.max(0, data[i + 2] + noise));
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(3, 3);
+  return texture;
+}
+
+export function createFilamentTexture(materialType: string, baseColorHex = '#1e2025'): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = baseColorHex;
+  ctx.fillRect(0, 0, 512, 512);
+
+  const isCF = materialType === 'petg_cf' || materialType === 'pla_cf';
+
+  // FDM Layer Line micro-grooves
+  const layerStep = isCF ? 3 : 4;
+  ctx.fillStyle = isCF ? 'rgba(0, 0, 0, 0.35)' : 'rgba(0, 0, 0, 0.2)';
+  for (let y = 0; y < 512; y += layerStep) {
+    ctx.fillRect(0, y, 512, 1);
+  }
+
+  // Carbon fiber micro-flake speckling or satin sheen noise
+  const imgData = ctx.getImageData(0, 0, 512, 512);
+  const data = imgData.data;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const grain = Math.random();
+    let noise = 0;
+
+    if (isCF) {
+      if (grain > 0.93) {
+        noise = 55 + Math.random() * 45; // Reflective carbon fiber flake
+      } else if (grain < 0.1) {
+        noise = -20 - Math.random() * 20;
+      } else {
+        noise = (Math.random() - 0.5) * 8;
+      }
+    } else {
+      if (grain > 0.96) {
+        noise = 30 + Math.random() * 20;
+      } else {
+        noise = (Math.random() - 0.5) * 6;
+      }
+    }
+
+    data[i] = Math.min(255, Math.max(0, data[i] + noise));
+    data[i + 1] = Math.min(255, Math.max(0, data[i + 1] + noise));
+    data[i + 2] = Math.min(255, Math.max(0, data[i + 2] + noise));
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(4, 4);
+  return texture;
+}

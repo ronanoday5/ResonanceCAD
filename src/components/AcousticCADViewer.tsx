@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { Wind, AlertTriangle, CheckCircle, Eye, EyeOff, ShieldCheck, Zap, Download } from 'lucide-react';
 import type {
   AcousticCalculationResult,
   AcousticParameters,
@@ -10,11 +11,14 @@ import type {
   EnclosureDimensions,
   PartMetadata,
 } from '../types/loudspeaker.ts';
-import { MATERIAL_SPECS } from '../services/acousticEngine.ts';
+import { MATERIAL_SPECS, SURFACE_FINISH_SPECS } from '../services/acousticEngine.ts';
+import { computeBaffleLayout } from '../services/baffleLayoutEngine.ts';
 import {
   createAcousticFoamTexture,
   createConeTexture,
+  createFilamentTexture,
   createPCBTexture,
+  createPolyureaTexture,
   createWoodTexture,
 } from './proceduralTextures.ts';
 
@@ -30,6 +34,11 @@ interface AcousticCADViewerProps {
   isCutawayMode: boolean;
   isWireframeMode: boolean;
   cameraPreset: CameraPreset;
+  onAutoResolveClashes?: () => void;
+  isAirflowStressVisible?: boolean;
+  onToggleAirflowStress?: () => void;
+  onModelRootReady?: (getRoot: () => THREE.Group | null) => void;
+  onOpenCadExport?: () => void;
 }
 
 interface ComponentMeshDef {
@@ -54,6 +63,11 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
   isCutawayMode,
   isWireframeMode,
   cameraPreset,
+  onAutoResolveClashes,
+  isAirflowStressVisible = true,
+  onToggleAirflowStress,
+  onModelRootReady,
+  onOpenCadExport,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const [hoveredPartId, setHoveredPartId] = useState<string | null>(null);
@@ -65,6 +79,12 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
   const clipPlaneRef = useRef<THREE.Plane>(new THREE.Plane(new THREE.Vector3(1, 0, 0), 0));
   const componentsRef = useRef<ComponentMeshDef[]>([]);
   const rootGroupRef = useRef<THREE.Group | null>(null);
+
+  useEffect(() => {
+    if (onModelRootReady) {
+      onModelRootReady(() => rootGroupRef.current);
+    }
+  }, [onModelRootReady]);
 
   const targetExplodeRef = useRef<number>(explodedPercent);
   const currentExplodeRef = useRef<number>(explodedPercent);
@@ -296,13 +316,39 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
     const t = materialSpec.nominalThicknessMm * scale;
     const baffleT = (dimensions.baffleThicknessMm || materialSpec.nominalThicknessMm) * scale;
 
-    const woodTex = createWoodTexture(materialSpec.textureColor, materialSpec.roughness);
-    const standardWoodMat = new THREE.MeshStandardMaterial({
-      map: woodTex,
-      roughness: materialSpec.roughness,
-      metalness: 0.05,
-      bumpMap: woodTex,
-      bumpScale: 0.001,
+    const activeFinishKey = dimensions.surfaceFinish || 'natural_hardwood_veneer';
+    const finishSpec = SURFACE_FINISH_SPECS[activeFinishKey] || SURFACE_FINISH_SPECS.natural_hardwood_veneer;
+    const finishColorHex = dimensions.finishColorHex || (activeFinishKey === 'natural_hardwood_veneer' ? materialSpec.textureColor : activeFinishKey === 'tour_grade_polyurea' ? '#1a1d20' : activeFinishKey === 'high_gloss_automotive' ? '#111111' : '#2b2e34');
+
+    const woodTex = createWoodTexture(finishColorHex, finishSpec.roughness);
+    const polyureaTex = createPolyureaTexture(finishColorHex);
+    const filamentTex = createFilamentTexture(materialSpec.id, finishColorHex || materialSpec.textureColor);
+
+    const isFilament = materialSpec.category === 'filaments';
+    const isCF = materialSpec.id === 'petg_cf' || materialSpec.id === 'pla_cf';
+
+    const filamentMat = new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color(finishColorHex || materialSpec.textureColor),
+      map: filamentTex,
+      roughness: isCF ? 0.72 : 0.35,
+      metalness: isCF ? 0.1 : 0.0,
+      clearcoat: isCF ? 0.05 : 0.2,
+      clearcoatRoughness: isCF ? 0.5 : 0.2,
+      bumpMap: filamentTex,
+      bumpScale: isCF ? 0.002 : 0.001,
+      clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+      clipShadows: true,
+    });
+
+    const standardFinishMat = new THREE.MeshPhysicalMaterial({
+      color: finishSpec.bumpType === 'none' ? new THREE.Color(finishColorHex) : undefined,
+      map: finishSpec.bumpType === 'woodgrain' ? woodTex : finishSpec.bumpType === 'polyurea_noise' ? polyureaTex : undefined,
+      roughness: finishSpec.roughness,
+      metalness: finishSpec.metalness,
+      clearcoat: finishSpec.clearcoat,
+      clearcoatRoughness: finishSpec.clearcoatRoughness,
+      bumpMap: finishSpec.bumpType === 'woodgrain' ? woodTex : finishSpec.bumpType === 'polyurea_noise' ? polyureaTex : undefined,
+      bumpScale: finishSpec.bumpType === 'polyurea_noise' ? 0.003 : finishSpec.bumpType === 'woodgrain' ? 0.001 : 0.0,
       clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
       clipShadows: true,
     });
@@ -320,7 +366,7 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
       clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
     });
 
-    const activePanelMat = isXRayMode ? xRayMat : standardWoodMat;
+    const activePanelMat = isXRayMode ? xRayMat : (isFilament ? filamentMat : standardFinishMat);
 
     const registerComponent = (
       id: string,
@@ -355,7 +401,11 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
 
     const explDistBase = Math.max(W, H, D) * 0.45;
 
-    // --- MULTI-DRIVER BAFFLE LAYOUT & CUTOUTS ---
+    // --- INTELLIGENT COLLISION-FREE BAFFLE LAYOUT & CUTOUTS ---
+    const layout = results.layout || computeBaffleLayout(dimensions, acoustics, results);
+    const frontDrivers = layout.components.filter((c) => c.panel === 'front' && c.role !== 'port');
+    const portComp = layout.components.find((c) => c.role === 'port');
+
     const baffleShape = new THREE.Shape();
     baffleShape.moveTo(-W / 2, -H / 2);
     baffleShape.lineTo(W / 2, -H / 2);
@@ -368,42 +418,32 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
     const tweeter = driverAssignments.tweeter.driver;
     const midrange = driverAssignments.midrange.driver;
 
-    const wooferR = (woofer.cutoutDiameterMm * scale) / 2;
-    const tweeterR = (tweeter.cutoutDiameterMm * scale) / 2;
-    const midR = (midrange.cutoutDiameterMm * scale) / 2;
-
-    const driverPositions: { role: string; y: number; r: number; driver: typeof woofer }[] = [];
-
-    if (topology === 'single') {
-      driverPositions.push({ role: 'woofer', y: H * 0.08, r: wooferR, driver: woofer });
-    } else if (topology === 'two_way') {
-      driverPositions.push({ role: 'tweeter', y: H * 0.28, r: tweeterR, driver: tweeter });
-      driverPositions.push({ role: 'woofer', y: -H * 0.1, r: wooferR, driver: woofer });
-    } else if (topology === 'mtm') {
-      driverPositions.push({ role: 'woofer', y: H * 0.26, r: wooferR, driver: woofer });
-      driverPositions.push({ role: 'tweeter', y: 0, r: tweeterR, driver: tweeter });
-      driverPositions.push({ role: 'woofer', y: -H * 0.26, r: wooferR, driver: woofer });
-    } else if (topology === 'three_way') {
-      driverPositions.push({ role: 'tweeter', y: H * 0.32, r: tweeterR, driver: tweeter });
-      driverPositions.push({ role: 'midrange', y: H * 0.08, r: midR, driver: midrange });
-      driverPositions.push({ role: 'woofer', y: -H * 0.22, r: wooferR, driver: woofer });
-    }
-
-    // Cutout holes in baffle
-    driverPositions.forEach((dp) => {
+    // Cutout holes in front baffle for all front transducers
+    frontDrivers.forEach((dp) => {
       const path = new THREE.Path();
-      path.absarc(0, dp.y, dp.r, 0, Math.PI * 2, true);
+      path.absarc(dp.centerX * scale, dp.centerY * scale, dp.cutoutRadiusMm * scale, 0, Math.PI * 2, true);
       baffleShape.holes.push(path);
     });
 
-    // Front port hole (if ported)
-    const isFrontPort = acoustics.alignment === 'ported' && acoustics.portType === 'round';
-    const portR = (acoustics.portDiameterMm * scale) / 2;
-    const portCenterY = -H * 0.38;
-    if (isFrontPort) {
-      const portPath = new THREE.Path();
-      portPath.absarc(0, portCenterY, portR, 0, Math.PI * 2, true);
-      baffleShape.holes.push(portPath);
+    // Front port hole (if ported alignment and port is on front)
+    if (acoustics.alignment === 'ported' && portComp && portComp.panel === 'front') {
+      if (acoustics.portType === 'round') {
+        const portPath = new THREE.Path();
+        portPath.absarc(portComp.centerX * scale, portComp.centerY * scale, portComp.cutoutRadiusMm * scale, 0, Math.PI * 2, true);
+        baffleShape.holes.push(portPath);
+      } else {
+        const slotWidthM = Math.min(W - 2 * t - 0.005, (portComp.slotWidthMm || 280) * scale);
+        const slotHeightM = (portComp.slotHeightMm || 40) * scale;
+        const slotPath = new THREE.Path();
+        const slotBottomY = (portComp.centerY - (portComp.slotHeightMm || 40) / 2) * scale;
+        const hw = slotWidthM / 2;
+        slotPath.moveTo(-hw, slotBottomY);
+        slotPath.lineTo(hw, slotBottomY);
+        slotPath.lineTo(hw, slotBottomY + slotHeightM);
+        slotPath.lineTo(-hw, slotBottomY + slotHeightM);
+        slotPath.closePath();
+        baffleShape.holes.push(slotPath);
+      }
     }
 
     const baffleGeo = new THREE.ExtrudeGeometry(baffleShape, {
@@ -420,10 +460,29 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
     const baffleBasePos = new THREE.Vector3(0, 0, D / 2 - baffleT / 2);
     registerComponent('baffle_front', baffleMesh, baffleBasePos, new THREE.Vector3(0, 0, 1), explDistBase * 1.2, true);
 
-    // 2. REAR PANEL
+    // 2. REAR PANEL (with cutout if rear port is active)
     const rearW = W - 2 * t;
     const rearH = H - 2 * t;
-    const rearGeo = new THREE.BoxGeometry(rearW, rearH, t);
+    let rearGeo: THREE.BufferGeometry;
+
+    if (acoustics.alignment === 'ported' && portComp && portComp.panel === 'rear') {
+      const rearShape = new THREE.Shape();
+      rearShape.moveTo(-rearW / 2, -rearH / 2);
+      rearShape.lineTo(rearW / 2, -rearH / 2);
+      rearShape.lineTo(rearW / 2, rearH / 2);
+      rearShape.lineTo(-rearW / 2, rearH / 2);
+      rearShape.closePath();
+
+      const rearPortHole = new THREE.Path();
+      rearPortHole.absarc(portComp.centerX * scale, portComp.centerY * scale, portComp.cutoutRadiusMm * scale, 0, Math.PI * 2, true);
+      rearShape.holes.push(rearPortHole);
+
+      rearGeo = new THREE.ExtrudeGeometry(rearShape, { depth: t, bevelEnabled: false });
+      rearGeo.center();
+    } else {
+      rearGeo = new THREE.BoxGeometry(rearW, rearH, t);
+    }
+
     const rearMesh = new THREE.Mesh(rearGeo, activePanelMat);
     const rearBasePos = new THREE.Vector3(0, 0, -D / 2 + t / 2);
     registerComponent('panel_rear', rearMesh, rearBasePos, new THREE.Vector3(0, 0, -1), explDistBase * 1.2, true);
@@ -487,10 +546,11 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
     braceMesh.rotation.x = Math.PI / 2;
     registerComponent('brace_window', braceMesh, new THREE.Vector3(0, -H * 0.05, -baffleT / 2 - t / 2), new THREE.Vector3(0, 0.4, 0), explDistBase * 0.4, false);
 
-    // 6. BUILD 3D DRIVER ASSEMBLIES FOR EACH PASSBAND
-    driverPositions.forEach((dp, idx) => {
-      const driverGroup = build3DDriverAssembly(dp.driver, scale, isCutawayMode, clipPlaneRef);
-      const driverBasePos = new THREE.Vector3(0, dp.y, D / 2);
+    // 6. BUILD 3D DRIVER ASSEMBLIES FOR EACH PASSBAND (Collision-Free)
+    frontDrivers.forEach((dp, idx) => {
+      const drvPreset = dp.role === 'tweeter' ? tweeter : (dp.role === 'midrange' ? midrange : woofer);
+      const driverGroup = build3DDriverAssembly(drvPreset, scale, isCutawayMode, clipPlaneRef);
+      const driverBasePos = new THREE.Vector3(dp.centerX * scale, dp.centerY * scale, D / 2);
       registerComponent(`driver_${dp.role}_${idx}`, driverGroup, driverBasePos, new THREE.Vector3(0, 0, 1), explDistBase * 1.5, false);
     });
 
@@ -507,17 +567,23 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
         clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
       });
       const midChamberMesh = new THREE.Mesh(midChamberGeo, midChamberMat);
-      const midY = H * 0.08;
+      const midComp = frontDrivers.find((d) => d.role === 'midrange');
+      const midY = midComp ? midComp.centerY * scale : H * 0.08;
       registerComponent('midrange_chamber', midChamberMesh, new THREE.Vector3(0, midY, D / 2 - baffleT - midBoxD / 2), new THREE.Vector3(0, 0.2, -0.4), explDistBase * 0.6, false);
     }
 
-    // 8. PORT TUBE
-    if (acoustics.alignment === 'ported') {
+    // 8. PORT TUBE & AERODYNAMICS (Collision-Guaranteed 3D Placement)
+    if (acoustics.alignment === 'ported' && portComp) {
       const portLengthM = results.portLengthMm * scale;
+      const isRearPort = portComp.panel === 'rear';
+      const portCenterX = portComp.centerX * scale;
+      const portCenterY = portComp.centerY * scale;
+
       if (acoustics.portType === 'round') {
         const portGroup = new THREE.Group();
         const innerR = (acoustics.portDiameterMm * scale) / 2;
         const outerR = innerR + 0.003;
+        const flareR = (acoustics.flareRadiusMm || results.optimalFlareRadiusMm || 16) * scale;
 
         const tubeGeo = new THREE.CylinderGeometry(outerR, outerR, portLengthM, 32, 1, true);
         tubeGeo.rotateX(Math.PI / 2);
@@ -531,14 +597,28 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
         const tubeMesh = new THREE.Mesh(tubeGeo, portMat);
         portGroup.add(tubeMesh);
 
-        const outerFlareGeo = new THREE.TorusGeometry(outerR + 0.008, 0.007, 14, 32);
-        const flareMesh = new THREE.Mesh(outerFlareGeo, portMat);
-        flareMesh.position.z = portLengthM / 2;
-        portGroup.add(flareMesh);
+        // Outer Bellmouth Exit Flare
+        // If front port: exit flare is flush with front baffle exterior face (+portLengthM / 2)
+        // If rear port: exit flare is flush with rear panel exterior face (-portLengthM / 2)
+        const outerFlareGeo = new THREE.TorusGeometry(outerR + flareR * 0.55, flareR * 0.45, 14, 32);
+        const outerFlareMesh = new THREE.Mesh(outerFlareGeo, portMat);
+        outerFlareMesh.position.z = isRearPort ? -portLengthM / 2 : portLengthM / 2;
+        portGroup.add(outerFlareMesh);
 
-        const portBasePos = new THREE.Vector3(0, portCenterY, D / 2 - portLengthM / 2);
-        registerComponent('port_tube', portGroup, portBasePos, new THREE.Vector3(0, 0, 1), explDistBase * 0.9, false);
+        // Inner Bellmouth Flare (if double flared)
+        if (acoustics.isDoubleFlared) {
+          const innerFlareGeo = new THREE.TorusGeometry(outerR + flareR * 0.55, flareR * 0.45, 14, 32);
+          const innerFlareMesh = new THREE.Mesh(innerFlareGeo, portMat);
+          innerFlareMesh.position.z = isRearPort ? portLengthM / 2 : -portLengthM / 2;
+          portGroup.add(innerFlareMesh);
+        }
+
+        const portBaseZ = isRearPort ? (-D / 2 + portLengthM / 2) : (D / 2 - portLengthM / 2);
+        const portBasePos = new THREE.Vector3(portCenterX, portCenterY, portBaseZ);
+        const explDir = isRearPort ? new THREE.Vector3(0, 0, -1) : new THREE.Vector3(0, 0, 1);
+        registerComponent('port_tube', portGroup, portBasePos, explDir, explDistBase * 0.9, false);
       } else {
+        const slotGroup = new THREE.Group();
         const slotW = W - 2 * t;
         const slotPlateL = portLengthM;
         const slotBoardGeo = new THREE.BoxGeometry(slotW, t, slotPlateL);
@@ -549,9 +629,20 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
           clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
         });
         const slotMesh = new THREE.Mesh(slotBoardGeo, slotBoardMat);
-        const slotHeightM = (acoustics.slotHeightMm || 40) * scale;
-        const slotBasePos = new THREE.Vector3(0, -H / 2 + t + slotHeightM + t / 2, D / 2 - slotPlateL / 2 - baffleT);
-        registerComponent('port_slot_board', slotMesh, slotBasePos, new THREE.Vector3(0, -0.3, 0.5), explDistBase * 0.5, false);
+        slotGroup.add(slotMesh);
+
+        // Slot entry rounded lip to mitigate edge turbulence
+        const lipR = (acoustics.slotLipRadiusMm || 12) * scale;
+        const lipGeo = new THREE.CylinderGeometry(lipR, lipR, slotW, 16);
+        lipGeo.rotateZ(Math.PI / 2);
+        const lipMesh = new THREE.Mesh(lipGeo, slotBoardMat);
+        lipMesh.position.set(0, t / 2, -slotPlateL / 2);
+        slotGroup.add(lipMesh);
+
+        const slotHeightM = (portComp.slotHeightMm || 40) * scale;
+        const slotBaseY = (portComp.centerY + (portComp.slotHeightMm || 40) / 2 + t / 2) * scale;
+        const slotBasePos = new THREE.Vector3(0, slotBaseY, D / 2 - slotPlateL / 2 - baffleT);
+        registerComponent('port_slot_board', slotGroup, slotBasePos, new THREE.Vector3(0, -0.3, 0.5), explDistBase * 0.5, false);
       }
     }
 
@@ -604,8 +695,250 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
       pcbGroup.add(postMesh);
     });
 
-    const terminalBasePos = new THREE.Vector3(0, -H * 0.22, -D / 2 + t);
+    // Offset crossover PCB if rear port is active so they never clash
+    const isRearPortActive = portComp && portComp.panel === 'rear';
+    const crossoverBaseY = isRearPortActive ? -rearH * 0.28 : -H * 0.22;
+    const terminalBasePos = new THREE.Vector3(0, crossoverBaseY, -D / 2 + t);
     registerComponent('crossover_pcb', pcbGroup, terminalBasePos, new THREE.Vector3(0, 0, -1), explDistBase * 1.3, false);
+
+    // 11. VISUAL 3D COLLISION ALERT RINGS (If any clash is present)
+    if (layout.hasCollision && rootGroupRef.current) {
+      layout.collisions.forEach((col) => {
+        const comp = layout.components.find((c) => col.id.includes(c.id));
+        if (comp) {
+          const ringR = comp.outerRadiusMm * scale;
+          const ringGeo = new THREE.RingGeometry(ringR * 0.98, ringR * 1.05, 32);
+          const ringMat = new THREE.MeshBasicMaterial({
+            color: 0xef4444,
+            side: THREE.DoubleSide,
+            depthTest: false,
+            transparent: true,
+            opacity: 0.85,
+          });
+          const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+          const zPos = comp.panel === 'rear' ? (-D / 2 - 0.002) : (D / 2 + 0.002);
+          ringMesh.position.set(comp.centerX * scale, comp.centerY * scale, zPos);
+          rootGroupRef.current?.add(ringMesh);
+        }
+      });
+    }
+
+    // 12. 3D VISUAL AIRFLOW INTERFERENCE & PROXIMITY STRESS OVERLAY (Red-to-Yellow Gradient)
+    if (acoustics.alignment === 'ported' && portComp && isAirflowStressVisible !== false) {
+      const portLengthM = results.portLengthMm * scale;
+      const isRearPort = portComp.panel === 'rear';
+      const portMouthXM = portComp.centerX * scale;
+      const portMouthYM = portComp.centerY * scale;
+      const portMouthZM = isRearPort ? (-D / 2 + t + portLengthM) : (D / 2 - baffleT - portLengthM);
+      const flowDirZ = isRearPort ? 1 : -1;
+      const innerR = (acoustics.portDiameterMm * scale) / 2;
+
+      const overlayGroup = new THREE.Group();
+
+      // Red-to-Yellow Stress to RGB gradient helper:
+      // Red (Critical Choke <=18mm) -> Orange (18-45mm) -> Yellow (45-75mm)
+      const getStressGradientColor = (s: number): THREE.Color => {
+        const col = new THREE.Color();
+        if (s >= 0.7) {
+          // Critical Choke: Vivid Red (#ef4444) to Orange-Red
+          const t = Math.min(1, Math.max(0, (s - 0.7) / 0.3));
+          col.setRGB(0.96, 0.22 * (1 - t) + 0.12 * t, 0.14 * (1 - t) + 0.10 * t);
+        } else if (s >= 0.35) {
+          // Boundary Drag: Vivid Orange (#f97316) to Golden Yellow
+          const t = Math.min(1, Math.max(0, (s - 0.35) / 0.35));
+          col.setRGB(0.98, 0.82 * (1 - t) + 0.45 * t, 0.06);
+        } else {
+          // Proximity Alert: Bright Yellow (#eab308 / #facc15)
+          col.setRGB(0.95, 0.85, 0.12);
+        }
+        return col;
+      };
+
+      // Calculate distance in mm from any 3D coordinate to nearest obstacle surface
+      const getDistanceToObstaclesMm = (px: number, py: number, pz: number): number => {
+        let minDist = 999;
+        // 1. Driver Magnets
+        frontDrivers.forEach((drv) => {
+          const isW = drv.role === 'woofer';
+          const magR = (isW ? woofer.magnetDiameterMm : drv.role === 'midrange' ? midrange.magnetDiameterMm : tweeter.magnetDiameterMm) * scale / 2;
+          const magRearZ = D / 2 - (drv.depthMm * scale);
+          const magFrontZ = magRearZ + ((isW ? woofer.magnetDepthMm : 30) * scale);
+          const dx = px - drv.centerX * scale;
+          const dy = py - drv.centerY * scale;
+          const radDist = Math.max(0, Math.hypot(dx, dy) - magR);
+          let dz = 0;
+          if (pz < magRearZ) dz = magRearZ - pz;
+          else if (pz > magFrontZ) dz = pz - magFrontZ;
+          const distM = Math.hypot(radDist, dz);
+          if (distM * 1000 < minDist) minDist = distM * 1000;
+        });
+        // 2. Window Brace
+        const braceY = -H * 0.05;
+        const braceDistMm = Math.max(0, Math.abs(py - braceY) - t / 2) * 1000;
+        if (braceDistMm < minDist) minDist = braceDistMm;
+        // 3. Opposing Wall
+        const wallZ = isRearPort ? (D / 2 - baffleT) : (-D / 2 + t);
+        const wallDistMm = Math.abs(pz - wallZ) * 1000;
+        if (wallDistMm < minDist) minDist = wallDistMm;
+
+        return minDist;
+      };
+
+      const computeStressFromDist = (dMm: number): number => {
+        if (dMm <= 18) return Math.min(1.0, 0.7 + 0.3 * ((18 - dMm) / 18));
+        if (dMm <= 45) return 0.35 + 0.35 * ((45 - dMm) / 27);
+        if (dMm <= 75) return 0.05 + 0.30 * ((75 - dMm) / 30);
+        return 0;
+      };
+
+      // A. Volumetric Airflow Intake Suction Cone / Envelope (Parametric Mesh with Red-Yellow Vertex Colors)
+      const radialSegs = 36;
+      const lengthSegs = 14;
+      const flowLengthM = Math.min(0.085, D * 0.3);
+      const flareExpM = Math.max(0.02, (acoustics.flareRadiusMm || 18) * scale);
+
+      const positions: number[] = [];
+      const colors: number[] = [];
+      const indices: number[] = [];
+
+      for (let j = 0; j <= lengthSegs; j++) {
+        const vFrac = j / lengthSegs;
+        const zOff = flowDirZ * vFrac * flowLengthM;
+        const curR = innerR + flareExpM * Math.pow(vFrac, 1.25) + 0.015 * vFrac;
+
+        for (let i = 0; i <= radialSegs; i++) {
+          const uFrac = i / radialSegs;
+          const angle = uFrac * Math.PI * 2;
+          const vx = portMouthXM + Math.cos(angle) * curR;
+          const vy = portMouthYM + Math.sin(angle) * curR;
+          const vz = portMouthZM + zOff;
+
+          positions.push(vx, vy, vz);
+
+          const distMm = getDistanceToObstaclesMm(vx, vy, vz);
+          const stress = computeStressFromDist(distMm);
+          const color = getStressGradientColor(stress);
+          colors.push(color.r, color.g, color.b);
+        }
+      }
+
+      for (let j = 0; j < lengthSegs; j++) {
+        for (let i = 0; i < radialSegs; i++) {
+          const a = j * (radialSegs + 1) + i;
+          const b = (j + 1) * (radialSegs + 1) + i;
+          const c = (j + 1) * (radialSegs + 1) + (i + 1);
+          const d = j * (radialSegs + 1) + (i + 1);
+          indices.push(a, b, d);
+          indices.push(b, c, d);
+        }
+      }
+
+      const flowFieldGeo = new THREE.BufferGeometry();
+      flowFieldGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      flowFieldGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      flowFieldGeo.setIndex(indices);
+      flowFieldGeo.computeVertexNormals();
+
+      const flowFieldMat = new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.62,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+      });
+      const flowFieldMesh = new THREE.Mesh(flowFieldGeo, flowFieldMat);
+      overlayGroup.add(flowFieldMesh);
+
+      // B. Concentric Isobar Stress Rings around Inner Intake Mouth
+      [0.015, 0.035, 0.06].forEach((zStep, ringIdx) => {
+        const ringZ = portMouthZM + flowDirZ * zStep;
+        const ringR = innerR + flareExpM * Math.pow(ringIdx * 0.4 + 0.3, 1.25) + 0.012;
+        const ringGeo = new THREE.RingGeometry(ringR * 0.98, ringR * 1.02, 36);
+        const ringDist = getDistanceToObstaclesMm(portMouthXM, portMouthYM, ringZ);
+        const ringStress = computeStressFromDist(ringDist);
+        const ringColor = getStressGradientColor(ringStress);
+        const ringMat = new THREE.MeshBasicMaterial({
+          color: ringColor,
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0.8,
+          depthWrite: false,
+          clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+        });
+        const isobarMesh = new THREE.Mesh(ringGeo, ringMat);
+        isobarMesh.position.set(portMouthXM, portMouthYM, ringZ);
+        overlayGroup.add(isobarMesh);
+      });
+
+      // C. Highlight Belts on Obstructing Driver Magnets & Matrix Brace
+      const airflowRep = layout.airflowInterference;
+      if (airflowRep && airflowRep.obstructions) {
+        airflowRep.obstructions.forEach((obs) => {
+          const obsCol = getStressGradientColor(obs.stressLevel);
+
+          // 3D Proximity Ray / Line connecting mouth and obstacle
+          const rayPoints = [
+            new THREE.Vector3(obs.portPosition.x, obs.portPosition.y, obs.portPosition.z),
+            new THREE.Vector3(obs.position.x, obs.position.y, obs.position.z),
+          ];
+          const rayGeo = new THREE.BufferGeometry().setFromPoints(rayPoints);
+          const rayMat = new THREE.LineBasicMaterial({
+            color: obsCol,
+            linewidth: 2,
+            transparent: true,
+            opacity: 0.95,
+            depthTest: false,
+          });
+          const rayLine = new THREE.Line(rayGeo, rayMat);
+          overlayGroup.add(rayLine);
+
+          // 3D Proximity Marker Beacon at obstacle point
+          const beaconGeo = new THREE.OctahedronGeometry(0.007, 0);
+          const beaconMat = new THREE.MeshBasicMaterial({
+            color: obsCol,
+            wireframe: false,
+            depthTest: false,
+            transparent: true,
+            opacity: 0.9,
+          });
+          const beaconMesh = new THREE.Mesh(beaconGeo, beaconMat);
+          beaconMesh.position.set(obs.position.x, obs.position.y, obs.position.z);
+          overlayGroup.add(beaconMesh);
+
+          // Halo rings around driver magnet
+          if (obs.type === 'driver_magnet') {
+            const haloGeo = new THREE.TorusGeometry(0.055, 0.0025, 12, 36);
+            const haloMat = new THREE.MeshBasicMaterial({
+              color: obsCol,
+              side: THREE.DoubleSide,
+              transparent: true,
+              opacity: 0.85,
+              depthWrite: false,
+              clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+            });
+            const haloMesh = new THREE.Mesh(haloGeo, haloMat);
+            haloMesh.position.set(obs.position.x, obs.position.y, obs.position.z);
+            overlayGroup.add(haloMesh);
+          } else if (obs.type === 'window_brace') {
+            // Highlight strip on window brace edge
+            const stripGeo = new THREE.BoxGeometry(0.12, 0.004, 0.008);
+            const stripMat = new THREE.MeshBasicMaterial({
+              color: obsCol,
+              transparent: true,
+              opacity: 0.85,
+              depthWrite: false,
+              clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+            });
+            const stripMesh = new THREE.Mesh(stripGeo, stripMat);
+            stripMesh.position.set(obs.position.x, obs.position.y, obs.position.z);
+            overlayGroup.add(stripMesh);
+          }
+        });
+      }
+
+      rootGroupRef.current?.add(overlayGroup);
+    }
 
     if (sceneRef.current) {
       const shadowPlane = sceneRef.current.children.find((c) => c instanceof THREE.Mesh && c.geometry instanceof THREE.PlaneGeometry);
@@ -613,7 +946,7 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
       const grid = sceneRef.current.children.find((c) => c instanceof THREE.GridHelper);
       if (grid) grid.position.y = -H / 2 - 0.002;
     }
-  }, [dimensions, acoustics, results, isXRayMode, isCutawayMode, isWireframeMode]);
+  }, [dimensions, acoustics, results, isXRayMode, isCutawayMode, isWireframeMode, isAirflowStressVisible]);
 
   // Hover & Selection Highlight
   useEffect(() => {
@@ -725,12 +1058,153 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
         </div>
       )}
 
-      <div className="absolute top-4 right-4 z-20 pointer-events-none hidden md:flex items-center gap-3 text-[11px] text-slate-400 font-mono bg-slate-950/70 border border-slate-800/80 rounded px-3 py-1.5">
-        <span>ROTATE: Left Click + Drag</span>
-        <span className="text-slate-600">|</span>
-        <span>PAN: Right Click + Drag</span>
-        <span className="text-slate-600">|</span>
-        <span>ZOOM: Scroll Wheel</span>
+      {/* 3D AIRFLOW INTERFERENCE & PROXIMITY STRESS HUD & LEGEND */}
+      {acoustics.alignment === 'ported' && (
+        <div className="absolute top-20 left-4 z-20 max-w-[340px] bg-slate-950/92 border border-slate-700/80 rounded-xl p-3 shadow-2xl backdrop-blur-none text-slate-200 font-sans transition-all">
+          <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800">
+            <div className="flex items-center gap-1.5">
+              <Wind className="w-4 h-4 text-amber-400" />
+              <span className="text-xs font-mono font-bold uppercase tracking-wider text-slate-200">
+                Airflow Stress 3D Field
+              </span>
+            </div>
+            {onToggleAirflowStress && (
+              <button
+                onClick={onToggleAirflowStress}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono transition cursor-pointer ${
+                  isAirflowStressVisible
+                    ? 'bg-amber-950/80 border border-amber-600/80 text-amber-300 font-bold'
+                    : 'bg-slate-800 text-slate-400 border border-slate-700'
+                }`}
+                title="Toggle Airflow Proximity Stress Overlay in 3D"
+              >
+                {isAirflowStressVisible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                <span>{isAirflowStressVisible ? 'ON' : 'OFF'}</span>
+              </button>
+            )}
+          </div>
+
+          {isAirflowStressVisible && (
+            <div className="mt-2.5 space-y-2.5 text-xs">
+              {/* Gradient Bar (Strict Red-to-Yellow gradient) */}
+              <div>
+                <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 mb-1">
+                  <span className="text-rose-400 font-bold">&le;18mm Choke</span>
+                  <span className="text-orange-400">18-45mm Drag</span>
+                  <span className="text-yellow-400">45-75mm Caution</span>
+                  <span className="text-emerald-400">&gt;75mm Safe</span>
+                </div>
+                <div className="h-2.5 w-full rounded-full bg-gradient-to-r from-red-500 via-orange-500 via-yellow-400 to-emerald-400 border border-slate-700 shadow-inner" />
+              </div>
+
+              {/* Status summary */}
+              {results.layout?.airflowInterference && (
+                <div className="space-y-1.5 pt-1 border-t border-slate-800/80">
+                  <div className="flex items-center justify-between text-[11px] font-mono">
+                    <span className="text-slate-400">Clearance Status:</span>
+                    <span
+                      className={`px-1.5 py-0.5 rounded font-bold uppercase text-[10px] ${
+                        results.layout.airflowInterference.overallStatus === 'choked'
+                          ? 'bg-rose-950 text-rose-300 border border-rose-700'
+                          : results.layout.airflowInterference.overallStatus === 'caution'
+                          ? 'bg-amber-950 text-amber-300 border border-amber-700'
+                          : 'bg-emerald-950 text-emerald-300 border border-emerald-700'
+                      }`}
+                    >
+                      {results.layout.airflowInterference.overallStatus === 'choked'
+                        ? 'Boundary Choked'
+                        : results.layout.airflowInterference.overallStatus === 'caution'
+                        ? 'Proximity Drag'
+                        : 'Laminar Safe'}
+                    </span>
+                  </div>
+
+                  {results.layout.airflowInterference.closestObstruction ? (
+                    <div className="bg-slate-900/80 border border-slate-800 rounded p-2 text-[11px]">
+                      <div className="flex items-center justify-between font-mono">
+                        <span className="text-slate-300 font-semibold truncate max-w-[190px]">
+                          {results.layout.airflowInterference.closestObstruction.name}
+                        </span>
+                        <span
+                          className={`font-bold ${
+                            results.layout.airflowInterference.closestObstruction.distanceMm <= 18
+                              ? 'text-rose-400'
+                              : results.layout.airflowInterference.closestObstruction.distanceMm <= 45
+                              ? 'text-orange-400'
+                              : 'text-yellow-400'
+                          }`}
+                        >
+                          {results.layout.airflowInterference.closestObstruction.distanceMm} mm
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                        {results.layout.airflowInterference.closestObstruction.description}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-slate-400 font-mono flex items-center gap-1.5">
+                      <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Full aerodynamic clearance (&gt;75mm).</span>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-2 text-[10px] font-mono pt-1 text-slate-400">
+                    <div className="bg-slate-900/60 p-1.5 rounded border border-slate-800/80">
+                      <div>Matrix Brace:</div>
+                      <div className="text-slate-200 font-bold">
+                        {results.layout.airflowInterference.minBracingClearanceMm} mm
+                      </div>
+                    </div>
+                    <div className="bg-slate-900/60 p-1.5 rounded border border-slate-800/80">
+                      <div>Turbulence Mult:</div>
+                      <div className="text-cyan-300 font-bold">
+                        {results.layout.airflowInterference.turbulenceMultiplier}x
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {results.layout?.hasCollision && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 px-4 py-2.5 rounded-lg bg-rose-950/90 border border-rose-500/80 text-rose-100 shadow-2xl backdrop-blur-md">
+          <div className="flex items-center gap-2 text-xs font-mono">
+            <span className="w-2.5 h-2.5 rounded-full bg-rose-500 shrink-0" />
+            <span className="font-bold text-rose-300">CLASH DETECTED:</span>
+            <span>{results.layout.collisions[0]?.description}</span>
+          </div>
+          {onAutoResolveClashes && (
+            <button
+              onClick={onAutoResolveClashes}
+              className="px-2.5 py-1 text-xs font-mono font-bold rounded bg-rose-600 hover:bg-rose-500 text-white transition shadow cursor-pointer shrink-0"
+            >
+              Auto-Resolve Clash
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
+        {onOpenCadExport && (
+          <button
+            onClick={onOpenCadExport}
+            title="Export 3D Enclosure to STL or STEP CAD file"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-mono font-bold text-xs shadow-lg shadow-cyan-950/50 border border-cyan-400/30 transition cursor-pointer"
+          >
+            <Download className="w-3.5 h-3.5 text-cyan-100" />
+            <span>Export CAD (STL/STEP)</span>
+          </button>
+        )}
+        <div className="hidden md:flex items-center gap-3 text-[11px] text-slate-400 font-mono bg-slate-950/70 border border-slate-800/80 rounded px-3 py-1.5 backdrop-blur-sm pointer-events-none">
+          <span>ROTATE: Left Click + Drag</span>
+          <span className="text-slate-600">|</span>
+          <span>PAN: Right Click + Drag</span>
+          <span className="text-slate-600">|</span>
+          <span>ZOOM: Scroll Wheel</span>
+        </div>
       </div>
     </div>
   );

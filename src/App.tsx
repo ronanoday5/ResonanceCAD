@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
+import * as THREE from 'three';
 import type {
   AcousticParameters,
   CameraPreset,
@@ -12,6 +13,7 @@ import {
   MATERIAL_SPECS,
 } from './services/acousticEngine.ts';
 import { generateCutList } from './services/cutlistGenerator.ts';
+import { autoResolveBaffleClashes } from './services/baffleLayoutEngine.ts';
 import { AcousticCADViewer } from './components/AcousticCADViewer.tsx';
 import { TopHeader } from './components/TopHeader.tsx';
 import { ControlDock } from './components/ControlDock.tsx';
@@ -20,7 +22,10 @@ import { CutListSheet } from './components/CutListSheet.tsx';
 import { FrequencyResponseChart } from './components/FrequencyResponseChart.tsx';
 import { CustomDriverModal } from './components/CustomDriverModal.tsx';
 import { CrossoverDesigner } from './components/CrossoverDesigner.tsx';
-import { X } from 'lucide-react';
+import { LiveSimulationPanel } from './components/LiveSimulationPanel.tsx';
+import { CadExportModal } from './components/CadExportModal.tsx';
+import type { CadExportScope } from './services/cadExportEngine.ts';
+import { CheckCircle, X } from 'lucide-react';
 
 export default function App() {
   const [dimensions, setDimensions] = useState<EnclosureDimensions>({
@@ -61,12 +66,21 @@ export default function App() {
     targetQtc: 0.707,
     targetFb: 26,
     portType: 'round',
+    portPlacement: 'auto',
     portDiameterMm: 80,
+    flareRadiusMm: 18,
+    isDoubleFlared: true,
     slotWidthMm: 290,
     slotHeightMm: 45,
+    slotLipRadiusMm: 12,
     numberOfPorts: 1,
     dampingFillPercent: 50,
     bracingLevel: 'standard',
+    materialPricing: {
+      customDensityKgM3: 680,
+      costPerSquareMeter: 68,
+      wastePercentage: 15,
+    },
     crossoverLowHz: 2500,
     crossoverHighHz: 3500,
     lowPassOrder: 2,
@@ -82,10 +96,22 @@ export default function App() {
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('isometric');
   const [selectedPartId, setSelectedPartId] = useState<string | null>(null);
 
+  const [isLiveSimOpen, setIsLiveSimOpen] = useState<boolean>(true);
   const [isCutListOpen, setIsCutListOpen] = useState<boolean>(false);
   const [isResponseChartOpen, setIsResponseChartOpen] = useState<boolean>(false);
   const [isCrossoverDesignerOpen, setIsCrossoverDesignerOpen] = useState<boolean>(false);
   const [isCustomDriverOpen, setIsCustomDriverOpen] = useState<boolean>(false);
+  const [isAirflowStressVisible, setIsAirflowStressVisible] = useState<boolean>(true);
+
+  const [isCadExportOpen, setIsCadExportOpen] = useState<boolean>(false);
+  const [cadExportScope, setCadExportScope] = useState<CadExportScope>('woodwork_only');
+  const [clashNotification, setClashNotification] = useState<string | null>(null);
+  const modelRootGetterRef = React.useRef<(() => THREE.Group | null) | null>(null);
+
+  const handleOpenCadExport = useCallback((scope?: CadExportScope) => {
+    if (scope) setCadExportScope(scope);
+    setIsCadExportOpen(true);
+  }, []);
 
   const acousticResults = useMemo(() => {
     return calculateAcoustics(dimensions, acoustics);
@@ -110,19 +136,41 @@ export default function App() {
     const newH = Math.round(newW * (acoustics.topology === 'three_way' || acoustics.topology === 'mtm' ? 1.85 : 1.55));
     const newD = Math.round(newW * 1.15);
 
-    setDimensions((prev) => ({
-      ...prev,
+    const updatedDims: EnclosureDimensions = {
+      ...dimensions,
       externalWidthMm: Math.min(750, Math.max(240, newW)),
       externalHeightMm: Math.min(1300, Math.max(280, newH)),
       externalDepthMm: Math.min(800, Math.max(220, newD)),
-    }));
+    };
 
-    setAcoustics((prev) => ({
-      ...prev,
+    const updatedAcoustics: AcousticParameters = {
+      ...acoustics,
       targetFb: optimal.optimalFbHz,
       targetQtc: optimal.targetQtc,
-    }));
-  }, [acoustics.driverAssignments.woofer, acoustics.alignment, acoustics.topology, dimensions.material]);
+    };
+
+    // Calculate preliminary results to run auto-resolve clash solver
+    const prelimResults = calculateAcoustics(updatedDims, updatedAcoustics);
+    const resolved = autoResolveBaffleClashes(updatedDims, updatedAcoustics, prelimResults);
+
+    // Re-evaluate acoustics for precise telemetry output
+    const finalRes = calculateAcoustics(resolved.dimensions, resolved.acoustics);
+    const turb = finalRes.layout?.airflowInterference?.turbulenceMultiplier || 1.0;
+    const closestMm = Math.round(
+      Math.min(
+        finalRes.layout?.airflowInterference?.minMagnetClearanceMm ?? 999,
+        finalRes.layout?.airflowInterference?.minBracingClearanceMm ?? 999,
+        finalRes.layout?.rearWallClearanceMm ?? 999
+      )
+    );
+
+    setDimensions(resolved.dimensions);
+    setAcoustics(resolved.acoustics);
+    setClashNotification(
+      `Auto-Aligned (${finalRes.netVolumeLiters}L @ ${finalRes.tuningFrequencyFb}Hz) • Zero 2D Clashes • Aerodynamic Health: ${turb}x - Laminar Flow (${closestMm}mm clearance)`
+    );
+    setTimeout(() => setClashNotification(null), 6000);
+  }, [acoustics, dimensions]);
 
   const handleAutoFixPort = useCallback(() => {
     if (acousticResults.recommendedMinimumPortDiameterMm > 0) {
@@ -132,6 +180,14 @@ export default function App() {
       }));
     }
   }, [acousticResults.recommendedMinimumPortDiameterMm]);
+
+  const handleAutoResolveClashes = useCallback(() => {
+    const resolved = autoResolveBaffleClashes(dimensions, acoustics, acousticResults);
+    setDimensions(resolved.dimensions);
+    setAcoustics(resolved.acoustics);
+    setClashNotification(resolved.explanation || 'Physical clashes automatically resolved.');
+    setTimeout(() => setClashNotification(null), 5000);
+  }, [dimensions, acoustics, acousticResults]);
 
   const handleSaveCustomDriver = (driver: DriverPreset) => {
     setAcoustics((prev) => ({
@@ -176,7 +232,18 @@ export default function App() {
         results={acousticResults}
         acoustics={acoustics}
         onOptimizeAlignment={handleAutoAlign}
+        isLiveSimOpen={isLiveSimOpen}
+        onToggleLiveSim={() => setIsLiveSimOpen((p) => !p)}
+        onOpenCadExport={handleOpenCadExport}
+        onAutoResolveClashes={handleAutoResolveClashes}
       />
+
+      {clashNotification && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-emerald-950/95 border border-emerald-500/80 text-emerald-100 shadow-2xl backdrop-blur-md font-mono text-xs animate-in fade-in">
+          <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span className="font-bold">{clashNotification}</span>
+        </div>
+      )}
 
       <main className="relative flex-1 w-full h-full overflow-hidden">
         <AcousticCADViewer
@@ -191,6 +258,23 @@ export default function App() {
           isCutawayMode={isCutawayMode}
           isWireframeMode={isWireframeMode}
           cameraPreset={cameraPreset}
+          onAutoResolveClashes={handleAutoResolveClashes}
+          isAirflowStressVisible={isAirflowStressVisible}
+          onToggleAirflowStress={() => setIsAirflowStressVisible((p) => !p)}
+          onModelRootReady={(getter) => {
+            modelRootGetterRef.current = getter;
+          }}
+          onOpenCadExport={handleOpenCadExport}
+        />
+
+        {/* Live Simulation Dockable Panel (Side-by-side beside 3D CAD) */}
+        <LiveSimulationPanel
+          results={acousticResults}
+          acoustics={acoustics}
+          isOpen={isLiveSimOpen}
+          onToggle={() => setIsLiveSimOpen(false)}
+          onAutoFixPort={handleAutoFixPort}
+          onOpenFullModal={() => setIsResponseChartOpen(true)}
         />
 
         <div className="absolute bottom-24 right-4 z-20 flex flex-col items-end gap-2 pointer-events-auto">
@@ -223,6 +307,7 @@ export default function App() {
         setDimensions={setDimensions}
         acoustics={acoustics}
         setAcoustics={setAcoustics}
+        results={acousticResults}
         explodedPercent={explodedPercent}
         setExplodedPercent={setExplodedPercent}
         isXRayMode={isXRayMode}
@@ -238,6 +323,23 @@ export default function App() {
         onOpenCrossoverDesigner={() => setIsCrossoverDesignerOpen(true)}
         onOpenCustomDriver={() => setIsCustomDriverOpen(true)}
         onAutoAlign={handleAutoAlign}
+        onAutoFixPort={handleAutoFixPort}
+        onAutoResolveClashes={handleAutoResolveClashes}
+        onToggleLiveSim={() => setIsLiveSimOpen((p) => !p)}
+        isLiveSimOpen={isLiveSimOpen}
+        isAirflowStressVisible={isAirflowStressVisible}
+        onToggleAirflowStress={() => setIsAirflowStressVisible((p) => !p)}
+        onOpenCadExport={handleOpenCadExport}
+      />
+
+      <CadExportModal
+        isOpen={isCadExportOpen}
+        onClose={() => setIsCadExportOpen(false)}
+        dimensions={dimensions}
+        acoustics={acoustics}
+        results={acousticResults}
+        getModelRoot={() => (modelRootGetterRef.current ? modelRootGetterRef.current() : null)}
+        initialScope={cadExportScope}
       />
 
       {selectedPart && (

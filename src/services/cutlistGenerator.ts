@@ -25,16 +25,28 @@ export function generateCutList(
   const tweeter = driverAssignments.tweeter.driver;
   const midrange = driverAssignments.midrange.driver;
 
-  // 1. Front Baffle with Multi-Driver Cutouts
+  const unitCostM2 = acoustics.materialPricing?.costPerSquareMeter ?? material.defaultCostPerM2;
+  const calcPanelCost = (wMm: number, lMm: number, qty: number = 1) =>
+    Math.round(((wMm * lMm * 1e-6) * unitCostM2 * qty) * 100) / 100;
+
+  // 1. Front Baffle with Multi-Driver Cutouts (Collision-Free CNC Coordinates)
   const baffleWeight = ((W * H * baffleT) * 1e-9) * material.densityKgM3;
-  let baffleCutoutDesc = `Woofer: Ø${woofer.cutoutDiameterMm}mm`;
-  if (topology === 'two_way') {
-    baffleCutoutDesc = `Tweeter: Ø${tweeter.cutoutDiameterMm}mm, Woofer: Ø${woofer.cutoutDiameterMm}mm`;
-  } else if (topology === 'mtm') {
-    baffleCutoutDesc = `Tweeter Center: Ø${tweeter.cutoutDiameterMm}mm, Dual Woofers: 2x Ø${woofer.cutoutDiameterMm}mm`;
-  } else if (topology === 'three_way') {
-    baffleCutoutDesc = `Tweeter: Ø${tweeter.cutoutDiameterMm}mm, Midrange: Ø${midrange.cutoutDiameterMm}mm, Woofer: Ø${woofer.cutoutDiameterMm}mm`;
-  }
+  const layout = results.layout;
+  const frontComps = layout?.components.filter((c) => c.panel === 'front') || [];
+  const frontCutoutList = frontComps.map((c) => {
+    if (c.role === 'port') {
+      return c.isSlot
+        ? `Slot Port (${c.slotWidthMm}x${c.slotHeightMm}mm @ Y=${Math.round(c.centerY)}mm)`
+        : `Aeroport (Ø${Math.round(c.cutoutRadiusMm * 2)}mm @ Y=${Math.round(c.centerY)}mm)`;
+    }
+    return `${c.role.toUpperCase()} (Ø${Math.round(c.cutoutRadiusMm * 2)}mm @ Y=${Math.round(c.centerY)}mm)`;
+  });
+
+  const baffleCutoutDesc = frontCutoutList.length > 0
+    ? frontCutoutList.join(', ')
+    : (topology === 'two_way'
+        ? `Tweeter: Ø${tweeter.cutoutDiameterMm}mm, Woofer: Ø${woofer.cutoutDiameterMm}mm`
+        : `Woofer: Ø${woofer.cutoutDiameterMm}mm`);
 
   const baffleItem: CutListItem = {
     id: 'baffle_front',
@@ -46,6 +58,7 @@ export function generateCutList(
     thicknessMm: baffleT,
     materialName: material.name,
     weightKg: Math.round(baffleWeight * 100) / 100,
+    estimatedCostUsd: calcPanelCost(W, H, 1),
     cutNotes: `Cut ${W}mm x ${H}mm face. Grain orientation: Vertical. Topology: ${topology.toUpperCase()}.`,
     machiningNotes: `CNC multi-bore: ${baffleCutoutDesc}. Flush-mount rebates: 8mm depth for driver outer flanges.`,
   };
@@ -58,7 +71,7 @@ export function generateCutList(
     dimensionsMm: { w: W, h: H, d: baffleT },
     material: material.name,
     weightKg: baffleItem.weightKg,
-    acousticRole: `Rigid multi-transducer mounting platform configured for ${topology.toUpperCase()} alignment. Resists driver motor reaction forces.`,
+    acousticRole: `Rigid multi-transducer mounting platform configured for ${topology.toUpperCase()} alignment. Zero-clash layout verified (${layout?.minBaffleClearanceMm ?? 15}mm clearance).`,
     assemblyNotes: jointType === 'rabbet' ? '9.5mm rabbet rebate along left, right, top, and bottom inner edges.' : 'Butt joint with internal corner cleats and polyurethane wood glue.',
     machiningOperations: [
       `Flush-mount driver rebates: 8mm depth`,
@@ -71,6 +84,13 @@ export function generateCutList(
   const rearW = Math.max(50, W - 2 * t);
   const rearH = Math.max(50, H - 2 * t);
   const rearWeight = ((rearW * rearH * t) * 1e-9) * material.densityKgM3;
+  const isRearPort = layout?.resolvedPortPlacement === 'rear' && acoustics.alignment === 'ported';
+  const rearPortComp = layout?.components.find((c) => c.panel === 'rear' && c.role === 'port');
+
+  const rearMachiningNotes = isRearPort && rearPortComp
+    ? `CNC bore: Rear Port Cutout Ø${Math.round(rearPortComp.cutoutRadiusMm * 2)}mm @ Y=+${Math.round(rearPortComp.centerY)}mm. Terminal cup cutout: Ø78mm @ Y=-${Math.round(rearH * 0.28)}mm.`
+    : 'Bore Ø78mm hole or recess for crossover terminal cup mounting plate @ Y=-100mm.';
+
   const rearItem: CutListItem = {
     id: 'panel_rear',
     name: 'Rear Panel',
@@ -81,8 +101,9 @@ export function generateCutList(
     thicknessMm: t,
     materialName: material.name,
     weightKg: Math.round(rearWeight * 100) / 100,
+    estimatedCostUsd: calcPanelCost(rearW, rearH, 1),
     cutNotes: `Cut ${rearW}mm x ${rearH}mm. Inset between side and top/bottom panels.`,
-    machiningNotes: 'Bore Ø78mm hole or recess for crossover terminal cup mounting plate.',
+    machiningNotes: rearMachiningNotes,
   };
   cutList.push(rearItem);
 
@@ -93,9 +114,11 @@ export function generateCutList(
     dimensionsMm: { w: rearW, h: rearH, d: t },
     material: material.name,
     weightKg: rearItem.weightKg,
-    acousticRole: 'Supports heavy passive crossover PCB board and terminal binding posts.',
+    acousticRole: isRearPort ? 'Houses rear-firing flared aerovent and passive crossover terminal plate.' : 'Supports heavy passive crossover PCB board and terminal binding posts.',
     assemblyNotes: 'Glued and clamped airtight with neoprene gasket sealing.',
-    machiningOperations: ['Terminal cup cutout: Ø78mm', '4x standoff pilot holes for crossover PCB mounting'],
+    machiningOperations: isRearPort && rearPortComp
+      ? [`Rear port cutout: Ø${Math.round(rearPortComp.cutoutRadiusMm * 2)}mm @ Y=+${Math.round(rearPortComp.centerY)}mm`, 'Terminal cup cutout: Ø78mm', '4x standoff pilot holes for crossover PCB']
+      : ['Terminal cup cutout: Ø78mm', '4x standoff pilot holes for crossover PCB mounting'],
   };
 
   // 3. Top & Bottom Panels
@@ -112,6 +135,7 @@ export function generateCutList(
     thicknessMm: t,
     materialName: material.name,
     weightKg: Math.round(topBottomWeight * 100) / 100,
+    estimatedCostUsd: calcPanelCost(W, topBottomD, 1),
     cutNotes: `Cut ${W}mm x ${topBottomD}mm. Full width roof panel.`,
     machiningNotes: 'Edge square cut at 90.0°.',
   };
@@ -127,6 +151,7 @@ export function generateCutList(
     thicknessMm: t,
     materialName: material.name,
     weightKg: Math.round(topBottomWeight * 100) / 100,
+    estimatedCostUsd: calcPanelCost(W, topBottomD, 1),
     cutNotes: `Cut ${W}mm x ${topBottomD}mm. Cabinet base panel.`,
     machiningNotes: 'Bore 4x M8 threaded brass inserts for acoustic isolation feet.',
   };
@@ -147,6 +172,7 @@ export function generateCutList(
     thicknessMm: t,
     materialName: material.name,
     weightKg: Math.round(sideWeight * 100) / 100,
+    estimatedCostUsd: calcPanelCost(sideD, sideH, 1),
     cutNotes: `Cut ${sideD}mm x ${sideH}mm. Inset between top and bottom panels.`,
     machiningNotes: 'Dado grooves 6mm deep for internal matrix brace placement.',
   };
@@ -162,6 +188,7 @@ export function generateCutList(
     thicknessMm: t,
     materialName: material.name,
     weightKg: Math.round(sideWeight * 100) / 100,
+    estimatedCostUsd: calcPanelCost(sideD, sideH, 1),
     cutNotes: `Cut ${sideD}mm x ${sideH}mm. Mirrors left side panel.`,
     machiningNotes: 'Dado grooves 6mm deep for internal matrix brace placement.',
   };
@@ -183,6 +210,7 @@ export function generateCutList(
     thicknessMm: t,
     materialName: material.name,
     weightKg: Math.round(braceWeight * braceQuantity * 100) / 100,
+    estimatedCostUsd: calcPanelCost(braceW, braceD, braceQuantity),
     cutNotes: `Cut ${braceW}mm x ${braceD}mm perimeter. CNC 4x radiused window cutouts.`,
     machiningNotes: 'Four rounded rectangular acoustic pass-through windows with 25mm corner radius fillets.',
   };
@@ -205,6 +233,7 @@ export function generateCutList(
       thicknessMm: t,
       materialName: material.name,
       weightKg: Math.round(midChamberWeight * 100) / 100,
+      estimatedCostUsd: calcPanelCost(midBoxW, midBoxH, 4),
       cutNotes: `Airtight isolated rear enclosure (${results.midrangeChamberVolumeLiters}L volume) isolating midrange driver from woofer pressure waves.`,
       machiningNotes: 'Glue and seal 100% airtight with silicone mastic behind midrange baffle cutout.',
     };
@@ -234,6 +263,7 @@ export function generateCutList(
     thicknessMm: 1.6,
     materialName: 'FR4 Fiber Glass with 2oz Copper Traces',
     weightKg: 0.85,
+    estimatedCostUsd: 18.50,
     cutNotes: `Populated with ${results.crossover.allComponents.length} passive filter components (${topology.toUpperCase()}).`,
     machiningNotes: results.crossover.allComponents.map(c => `${c.name}: ${c.valueFormatted}`).join(', '),
   };

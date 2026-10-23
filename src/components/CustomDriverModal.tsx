@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { DriverPreset } from '../types/loudspeaker.ts';
-import { Disc3, Save, X } from 'lucide-react';
+import { DRIVER_PRESETS } from '../services/acousticEngine.ts';
+import { Disc3, Save, X, Download } from 'lucide-react';
 
 interface CustomDriverModalProps {
   currentDriver: DriverPreset;
@@ -19,6 +20,17 @@ export const CustomDriverModal: React.FC<CustomDriverModalProps> = ({
     brand: currentDriver.brand === 'Dayton Audio' ? 'Custom' : currentDriver.brand,
     model: currentDriver.model.includes('Custom') ? currentDriver.model : `Custom ${currentDriver.nominalDiameterInch}" Driver`,
   });
+
+  const handleLoadPreset = (presetId: string) => {
+    const found = DRIVER_PRESETS.find((d) => d.id === presetId);
+    if (found) {
+      setFormData({
+        ...found,
+        id: 'custom_' + found.id,
+        model: `${found.model} (Customized)`,
+      });
+    }
+  };
 
   const handleChange = (field: keyof DriverPreset, val: string | number) => {
     setFormData((prev) => ({
@@ -61,6 +73,34 @@ export const CustomDriverModal: React.FC<CustomDriverModalProps> = ({
 
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
+          {/* Quick Preset Importer */}
+          <div className="bg-slate-950/80 border border-cyan-800/60 p-3 rounded-lg">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-mono text-cyan-400 flex items-center gap-1.5 font-bold uppercase tracking-wider">
+                <Download className="w-3.5 h-3.5" />
+                Quick-Load Preset Baseline from Catalogue
+              </span>
+              <span className="text-[10px] text-slate-400 font-mono">
+                {DRIVER_PRESETS.length} Transducers Available
+              </span>
+            </div>
+            <select
+              onChange={(e) => {
+                if (e.target.value) handleLoadPreset(e.target.value);
+              }}
+              defaultValue=""
+              className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-slate-200 font-sans focus:outline-none focus:border-cyan-400 cursor-pointer"
+            >
+              <option value="" disabled>
+                -- Select a driver from JBL Pro, Dayton, Scan-Speak, SEAS, Peerless --
+              </option>
+              {DRIVER_PRESETS.map((d) => (
+                <option key={d.id} value={d.id}>
+                  [{d.brand}] {d.model} — {d.nominalDiameterInch}" (Fs {d.fs}Hz, Qts {d.qts}, Vas {d.vas}L, {d.pe}W)
+                </option>
+              ))}
+            </select>
+          </div>
           {/* Driver identity */}
           <div className="grid grid-cols-2 gap-3">
             <div>

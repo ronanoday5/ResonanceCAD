@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan for multi-driver loudspeaker enclosure support and passive crossover network designer.",
-  "updatedAt": "2026-10-19T16:05:51.019329156Z",
-  "requestFeedback": true,
-  "userFacing": true
+  "summary":  "Implementation plan for advanced acoustic simulation, flared and slot port aerodynamics, and custom material density/cost calculator.",
+  "updatedAt":  "2026-10-20T20:19:02.128759547Z",
+  "requestFeedback":  true,
+  "userFacing":  true
 }
