@@ -5,15 +5,13 @@ import { Activity, AlertTriangle, CheckCircle, Volume2, Clock, Zap } from 'lucid
 interface FrequencyResponseChartProps {
   results: AcousticCalculationResult;
   acoustics: AcousticParameters;
-  onAutoFixPort?: () => void;
 }
 
-type ModalCurveTab = 'spl' | 'spinorama' | 'group_delay';
+type ModalCurveTab = 'spl' | 'spinorama' | 'group_delay' | 'impedance';
 
 export const FrequencyResponseChart: React.FC<FrequencyResponseChartProps> = ({
   results,
   acoustics,
-  onAutoFixPort,
 }) => {
   const [activeTab, setActiveTab] = useState<ModalCurveTab>('spl');
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
@@ -21,13 +19,16 @@ export const FrequencyResponseChart: React.FC<FrequencyResponseChartProps> = ({
   const points = results.frequencyResponse || [];
   const spinPoints = results.spinorama || [];
   const gdPoints = results.groupDelay || [];
+  const impReport = results.systemImpedance;
+  const impPoints = impReport?.points || [];
+  const freeAirPoints = impReport?.freeAirPoints || [];
 
   if (!points || points.length === 0) return null;
 
   const svgWidth = 660;
   const svgHeight = 270;
   const padLeft = 48;
-  const padRight = 20;
+  const padRight = 48; // Right padding for phase axis
   const padTop = 20;
   const padBottom = 35;
   const plotWidth = svgWidth - padLeft - padRight;
@@ -48,15 +49,27 @@ export const FrequencyResponseChart: React.FC<FrequencyResponseChartProps> = ({
   let maxY = 6;
   let gridYValues = [6, 3, 0, -3, -6, -12, -18, -24, -30];
 
+  const maxImpMag = Math.max(50, Math.ceil((impReport?.peakImpedanceOhm || 45) * 1.15 / 10) * 10);
+
   if (activeTab === 'group_delay') {
     minY = 0;
     maxY = 50;
     gridYValues = [50, 40, 30, 20, 10, 0];
+  } else if (activeTab === 'impedance') {
+    minY = 0;
+    maxY = maxImpMag;
+    gridYValues = [maxImpMag, Math.round(maxImpMag * 0.75), Math.round(maxImpMag * 0.5), Math.round(maxImpMag * 0.25), 0];
   }
 
   const valToY = (val: number) => {
     const clamped = Math.max(minY, Math.min(maxY, val));
     return padTop + ((maxY - clamped) / (maxY - minY)) * plotHeight;
+  };
+
+  // Phase scale (-90 deg to +90 deg mapped to 0..plotHeight)
+  const phaseToY = (deg: number) => {
+    const clamped = Math.max(-90, Math.min(90, deg));
+    return padTop + ((90 - clamped) / 180) * plotHeight;
   };
 
   // Build SVG paths for SPL mode
@@ -103,6 +116,22 @@ export const FrequencyResponseChart: React.FC<FrequencyResponseChartProps> = ({
     const x = freqToX(p.freq);
     gdActualD += `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${valToY(p.groupDelayMs).toFixed(1)} `;
     gdMaxLimitD += `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${valToY(p.cycleThresholdMs).toFixed(1)} `;
+  });
+
+  // Build SVG paths for Impedance mode
+  let sysImpD = '';
+  let sysPhaseD = '';
+  let freeAirImpD = '';
+
+  impPoints.forEach((p, idx) => {
+    const x = freqToX(p.freq);
+    sysImpD += `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${valToY(p.magnitudeOhm).toFixed(1)} `;
+    sysPhaseD += `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${phaseToY(p.phaseDeg).toFixed(1)} `;
+  });
+
+  freeAirPoints.forEach((p, idx) => {
+    const x = freqToX(p.freq);
+    freeAirImpD += `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${valToY(p.magnitudeOhm).toFixed(1)} `;
   });
 
   const gridFreqs = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
@@ -165,6 +194,21 @@ export const FrequencyResponseChart: React.FC<FrequencyResponseChartProps> = ({
             <Clock className="w-3.5 h-3.5 text-purple-400" />
             <span>Group Delay Compliance</span>
           </button>
+
+          <button
+            onClick={() => {
+              setActiveTab('impedance');
+              setHoverIndex(null);
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded transition ${
+              activeTab === 'impedance'
+                ? 'bg-amber-950 border border-amber-500 text-amber-300 font-bold'
+                : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Activity className="w-3.5 h-3.5 text-amber-400" />
+            <span>System Impedance &amp; Phase</span>
+          </button>
         </div>
 
         {/* Legend */}
@@ -204,6 +248,17 @@ export const FrequencyResponseChart: React.FC<FrequencyResponseChartProps> = ({
             <span className="text-rose-400 font-semibold">--- 1.5/f Audibility Ceiling</span>
           </div>
         )}
+
+        {activeTab === 'impedance' && (
+          <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono">
+            <span className="text-cyan-400 font-bold">● System |Z| (Ω)</span>
+            <span className="text-amber-400 font-semibold">--- Phase (°)</span>
+            <span className="text-purple-400">··· Free-Air |Z|</span>
+            <span className="text-slate-400">
+              Min: <strong className="text-rose-400">{impReport?.minimumImpedanceOhm ?? 4.0}Ω</strong> ({impReport?.nominalImpedanceOhm ?? 8}Ω Nom)
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="relative w-full aspect-[21/9] min-h-[230px]">
@@ -221,7 +276,13 @@ export const FrequencyResponseChart: React.FC<FrequencyResponseChartProps> = ({
               let closestIdx = 0;
               let minDiff = 99999;
               const activeArr =
-                activeTab === 'spinorama' ? spinPoints : activeTab === 'group_delay' ? gdPoints : points;
+                activeTab === 'spinorama'
+                  ? spinPoints
+                  : activeTab === 'group_delay'
+                  ? gdPoints
+                  : activeTab === 'impedance'
+                  ? impPoints
+                  : points;
               activeArr.forEach((pt, idx) => {
                 const diff = Math.abs(pt.freq - fAtMouse);
                 if (diff < minDiff) {
@@ -239,10 +300,15 @@ export const FrequencyResponseChart: React.FC<FrequencyResponseChartProps> = ({
               <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.3" />
               <stop offset="100%" stopColor="#0284c7" stopOpacity="0.0" />
             </linearGradient>
+            <linearGradient id="impGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.25" />
+              <stop offset="100%" stopColor="#0891b2" stopOpacity="0.0" />
+            </linearGradient>
           </defs>
 
           <rect x={padLeft} y={padTop} width={plotWidth} height={plotHeight} fill="#090b0e" stroke="#1e2430" strokeWidth="1" />
 
+          {/* Left Y-axis Grid & Labels */}
           {gridYValues.map((yVal) => {
             const y = valToY(yVal);
             const isZero = yVal === 0;
@@ -251,11 +317,30 @@ export const FrequencyResponseChart: React.FC<FrequencyResponseChartProps> = ({
               <g key={`db-${yVal}`}>
                 <line x1={padLeft} y1={y} x2={padLeft + plotWidth} y2={y} stroke={isZero ? '#38bdf8' : isMinus3 ? '#f59e0b' : '#1e2430'} strokeDasharray={isMinus3 ? '4,4' : undefined} strokeWidth={isZero || isMinus3 ? 1.2 : 0.8} opacity={0.6} />
                 <text x={padLeft - 6} y={y + 3.5} textAnchor="end" fontSize="9" fontFamily="monospace" fill={isZero ? '#38bdf8' : isMinus3 ? '#f59e0b' : '#64748b'}>
-                  {activeTab === 'group_delay' ? `${yVal}ms` : yVal > 0 ? `+${yVal}` : yVal}
+                  {activeTab === 'group_delay' ? `${yVal}ms` : activeTab === 'impedance' ? `${yVal}Ω` : yVal > 0 ? `+${yVal}` : yVal}
                 </text>
               </g>
             );
           })}
+
+          {/* Right Y-axis Labels for Electrical Phase in Impedance Mode */}
+          {activeTab === 'impedance' && (
+            <>
+              {[-90, -45, 0, 45, 90].map((phaseVal) => {
+                const py = phaseToY(phaseVal);
+                return (
+                  <g key={`phase-${phaseVal}`}>
+                    {phaseVal === 0 && (
+                      <line x1={padLeft} y1={py} x2={padLeft + plotWidth} y2={py} stroke="#f59e0b" strokeDasharray="3,3" strokeWidth={1} opacity={0.5} />
+                    )}
+                    <text x={padLeft + plotWidth + 6} y={py + 3.5} textAnchor="start" fontSize="9" fontFamily="monospace" fill="#f59e0b">
+                      {phaseVal > 0 ? `+${phaseVal}°` : `${phaseVal}°`}
+                    </text>
+                  </g>
+                );
+              })}
+            </>
+          )}
 
           {gridFreqs.map((freqVal) => {
             const x = freqToX(freqVal);
@@ -303,6 +388,59 @@ export const FrequencyResponseChart: React.FC<FrequencyResponseChartProps> = ({
             <>
               <path d={gdMaxLimitD} fill="none" stroke="#ef4444" strokeWidth="1.6" strokeDasharray="4,4" opacity="0.85" />
               <path d={gdActualD} fill="none" stroke="#38bdf8" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+            </>
+          )}
+
+          {/* Impedance Mode Traces */}
+          {activeTab === 'impedance' && (
+            <>
+              {/* Free-Air Driver Impedance (Dotted Violet) */}
+              <path d={freeAirImpD} fill="none" stroke="#c084fc" strokeWidth="1.4" strokeDasharray="2,3" opacity="0.75" />
+              {/* System Electrical Phase (Dashed Amber) */}
+              <path d={sysPhaseD} fill="none" stroke="#fbbf24" strokeWidth="1.6" strokeDasharray="4,3" opacity="0.85" />
+              {/* System Impedance Magnitude (Solid Cyan) */}
+              <path d={sysImpD} fill="none" stroke="#22d3ee" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+
+              {/* Marker for Tuning Dip Fb or Box Resonance Fc */}
+              {impReport?.portTuningFbHz && (
+                <g>
+                  <line
+                    x1={freqToX(impReport.portTuningFbHz)}
+                    y1={padTop}
+                    x2={freqToX(impReport.portTuningFbHz)}
+                    y2={padTop + plotHeight}
+                    stroke="#10b981"
+                    strokeWidth="1.2"
+                    strokeDasharray="3,3"
+                  />
+                  <circle
+                    cx={freqToX(impReport.portTuningFbHz)}
+                    cy={phaseToY(0)}
+                    r="4"
+                    fill="#10b981"
+                  />
+                </g>
+              )}
+
+              {impReport?.boxResonanceFcHz && (
+                <g>
+                  <line
+                    x1={freqToX(impReport.boxResonanceFcHz)}
+                    y1={padTop}
+                    x2={freqToX(impReport.boxResonanceFcHz)}
+                    y2={padTop + plotHeight}
+                    stroke="#f59e0b"
+                    strokeWidth="1.2"
+                    strokeDasharray="3,3"
+                  />
+                  <circle
+                    cx={freqToX(impReport.boxResonanceFcHz)}
+                    cy={valToY(impReport.peakImpedanceOhm)}
+                    r="4"
+                    fill="#f59e0b"
+                  />
+                </g>
+              )}
             </>
           )}
 
@@ -384,6 +522,28 @@ export const FrequencyResponseChart: React.FC<FrequencyResponseChartProps> = ({
                 </div>
               </>
             )}
+            {activeTab === 'impedance' && impPoints[hoverIndex] && (
+              <>
+                <div>
+                  <span className="text-slate-500">FREQ: </span>
+                  <span className="text-slate-100 font-semibold">{impPoints[hoverIndex].freq} Hz</span>
+                </div>
+                <div>
+                  <span className="text-slate-500">SYSTEM |Z|: </span>
+                  <span className="text-cyan-400 font-bold">{impPoints[hoverIndex].magnitudeOhm.toFixed(2)} Ω</span>
+                </div>
+                <div>
+                  <span className="text-slate-500">PHASE: </span>
+                  <span className="text-amber-400 font-semibold">{impPoints[hoverIndex].phaseDeg > 0 ? `+${impPoints[hoverIndex].phaseDeg.toFixed(1)}` : impPoints[hoverIndex].phaseDeg.toFixed(1)}°</span>
+                </div>
+                {freeAirPoints[hoverIndex] && (
+                  <div>
+                    <span className="text-slate-500">FREE-AIR: </span>
+                    <span className="text-purple-400">{freeAirPoints[hoverIndex].magnitudeOhm.toFixed(1)} Ω</span>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>
@@ -402,10 +562,10 @@ export const FrequencyResponseChart: React.FC<FrequencyResponseChartProps> = ({
             </div>
           </div>
 
-          {results.isChuffingRisk && onAutoFixPort && (
-            <button onClick={onAutoFixPort} className="px-2.5 py-1 text-[11px] font-medium rounded bg-rose-800 hover:bg-rose-700 text-white shrink-0 font-mono transition">
-              Auto-Upsize Port
-            </button>
+          {results.isChuffingRisk && (
+            <span className="px-2 py-0.5 text-[10px] font-semibold rounded bg-rose-950/80 border border-rose-800 text-rose-300 shrink-0 font-mono">
+              Turbulence Warning
+            </span>
           )}
         </div>
       )}

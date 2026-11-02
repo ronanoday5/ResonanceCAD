@@ -4,46 +4,53 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle,
-  ChevronRight,
   Maximize2,
   Wind,
   Zap,
   Volume2,
   Clock,
+  X,
+  Layers,
+  ShieldCheck,
 } from 'lucide-react';
+import { useUnits } from '../context/UnitContext.tsx';
 
 interface LiveSimulationPanelProps {
   results: AcousticCalculationResult;
   acoustics: AcousticParameters;
   isOpen: boolean;
   onToggle: () => void;
-  onAutoFixPort: () => void;
   onOpenFullModal: () => void;
+  embedded?: boolean;
 }
 
-export type SimCurveMode = 'spl' | 'spinorama' | 'group_delay' | 'excursion' | 'velocity';
+export type SimCurveMode = 'spl' | 'spinorama' | 'group_delay' | 'excursion' | 'velocity' | 'impedance';
 
 export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
   results,
   acoustics,
   isOpen,
   onToggle,
-  onAutoFixPort,
   onOpenFullModal,
+  embedded = false,
 }) => {
+  const { formatLength, formatVelocity } = useUnits();
   const [curveMode, setCurveMode] = useState<SimCurveMode>('spl');
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
-  if (!isOpen) return null;
+  if (!isOpen && !embedded) return null;
 
   const points = results.frequencyResponse || [];
   const spinPoints = results.spinorama || [];
   const gdPoints = results.groupDelay || [];
+  const impReport = results.systemImpedance;
+  const impPoints = impReport?.points || [];
+  const freeAirPoints = impReport?.freeAirPoints || [];
 
   const svgWidth = 440;
   const svgHeight = 220;
   const padLeft = 40;
-  const padRight = 15;
+  const padRight = curveMode === 'impedance' ? 35 : 15;
   const padTop = 18;
   const padBottom = 30;
   const plotWidth = svgWidth - padLeft - padRight;
@@ -62,35 +69,41 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
   // Y-axis scales depending on mode
   let minY = -30;
   let maxY = 6;
-  let yUnit = 'dB';
   let gridYValues = [6, 0, -6, -12, -18, -24, -30];
+
+  const maxImpMag = Math.max(45, Math.ceil((impReport?.peakImpedanceOhm || 40) * 1.15 / 10) * 10);
 
   if (curveMode === 'excursion') {
     const maxExcursion = Math.max(10, Math.ceil(acoustics.driverAssignments.woofer.driver.xmax * 1.5));
     minY = 0;
     maxY = maxExcursion;
-    yUnit = 'mm';
     gridYValues = [maxY, Math.round(maxY * 0.75), Math.round(maxY * 0.5), Math.round(maxY * 0.25), 0];
   } else if (curveMode === 'velocity') {
     minY = 0;
     maxY = Math.max(25, Math.ceil(results.portAirVelocityMs * 1.25));
-    yUnit = 'm/s';
     gridYValues = [maxY, 17, 10, 5, 0];
   } else if (curveMode === 'group_delay') {
     minY = 0;
     maxY = 50;
-    yUnit = 'ms';
     gridYValues = [50, 40, 30, 20, 10, 0];
   } else if (curveMode === 'spinorama') {
     minY = -30;
     maxY = 6;
-    yUnit = 'dB';
     gridYValues = [6, 0, -6, -12, -18, -24, -30];
+  } else if (curveMode === 'impedance') {
+    minY = 0;
+    maxY = maxImpMag;
+    gridYValues = [maxImpMag, Math.round(maxImpMag * 0.75), Math.round(maxImpMag * 0.5), Math.round(maxImpMag * 0.25), 0];
   }
 
   const valToY = (val: number) => {
     const clamped = Math.max(minY, Math.min(maxY, val));
     return padTop + ((maxY - clamped) / (maxY - minY)) * plotHeight;
+  };
+
+  const phaseToY = (deg: number) => {
+    const clamped = Math.max(-90, Math.min(90, deg));
+    return padTop + ((90 - clamped) / 180) * plotHeight;
   };
 
   // Build SVG Paths for standard modes
@@ -107,6 +120,11 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
   // Group Delay paths
   let gdActualD = '';
   let gdMaxLimitD = '';
+
+  // Impedance paths
+  let sysImpD = '';
+  let sysPhaseD = '';
+  let freeAirImpD = '';
 
   if (curveMode === 'spl' || curveMode === 'excursion' || curveMode === 'velocity') {
     points.forEach((p, idx) => {
@@ -135,6 +153,16 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
       gdActualD += `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${valToY(p.groupDelayMs).toFixed(1)} `;
       gdMaxLimitD += `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${valToY(p.cycleThresholdMs).toFixed(1)} `;
     });
+  } else if (curveMode === 'impedance') {
+    impPoints.forEach((p, idx) => {
+      const x = freqToX(p.freq);
+      sysImpD += `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${valToY(p.magnitudeOhm).toFixed(1)} `;
+      sysPhaseD += `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${phaseToY(p.phaseDeg).toFixed(1)} `;
+    });
+    freeAirPoints.forEach((p, idx) => {
+      const x = freqToX(p.freq);
+      freeAirImpD += `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${valToY(p.magnitudeOhm).toFixed(1)} `;
+    });
   }
 
   const areaD = mainPathD
@@ -144,13 +172,6 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
   const gridFreqs = [20, 50, 100, 200, 500, 1000, 5000, 10000, 20000];
   const majorFreqs = [20, 100, 1000, 10000];
 
-  const activePointsLength =
-    curveMode === 'spinorama'
-      ? spinPoints.length
-      : curveMode === 'group_delay'
-      ? gdPoints.length
-      : points.length;
-
   const hoveredSpl = hoverIndex !== null && points[hoverIndex] ? points[hoverIndex] : null;
   const hoveredSpin = hoverIndex !== null && spinPoints[hoverIndex] ? spinPoints[hoverIndex] : null;
   const hoveredGd = hoverIndex !== null && gdPoints[hoverIndex] ? gdPoints[hoverIndex] : null;
@@ -159,8 +180,12 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
     .filter((p) => p.freq <= 100)
     .every((p) => !p.isAudible);
 
+  const containerClass = embedded
+    ? 'w-full bg-[#090c12] border border-slate-800/90 rounded-xl flex flex-col overflow-hidden font-sans text-slate-200 shadow-lg'
+    : 'absolute top-14 right-4 z-30 w-[440px] max-w-[calc(100vw-2rem)] bg-[#0a0d13]/95 border border-slate-800 rounded-xl shadow-2xl backdrop-blur-md flex flex-col overflow-hidden font-sans text-slate-200';
+
   return (
-    <aside className="absolute top-14 right-4 z-30 w-[440px] max-w-[calc(100vw-2rem)] bg-[#0a0d13]/95 border border-slate-800 rounded-xl shadow-2xl backdrop-blur-md flex flex-col overflow-hidden font-sans text-slate-200">
+    <aside className={containerClass}>
       {/* Panel Header */}
       <div className="flex items-center justify-between px-3.5 py-2.5 bg-[#07090e] border-b border-slate-800/90 text-xs select-none">
         <div className="flex items-center gap-2">
@@ -177,17 +202,25 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
           <button
             onClick={onOpenFullModal}
             title="Expand Fullscreen Chart"
-            className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition"
+            className="flex items-center gap-1 px-2 py-1 rounded bg-slate-900 border border-slate-800 text-slate-300 hover:text-white hover:bg-slate-800 transition text-[10px] font-mono cursor-pointer"
           >
-            <Maximize2 className="w-3.5 h-3.5" />
+            <Maximize2 className="w-3 h-3 text-cyan-400" />
+            <span>Expand</span>
           </button>
-          <button
-            onClick={onToggle}
-            title="Close Live Simulation Dock"
-            className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition"
-          >
-            <ChevronRight className="w-4 h-4 text-slate-400" />
-          </button>
+          {!embedded && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onToggle();
+              }}
+              title="Close Live Simulation (X)"
+              className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -239,6 +272,18 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
         >
           <Activity className="w-3 h-3 text-amber-400" />
           <span>Excursion</span>
+        </button>
+
+        <button
+          onClick={() => setCurveMode('impedance')}
+          className={`flex items-center gap-1 px-2 py-1 rounded transition shrink-0 ${
+            curveMode === 'impedance'
+              ? 'bg-amber-950 border border-amber-600/80 text-amber-300 font-semibold'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <Activity className="w-3 h-3 text-amber-400" />
+          <span>Impedance (|Z|)</span>
         </button>
 
         {acoustics.alignment === 'ported' && (
@@ -412,8 +457,52 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
               />
             )}
 
+            {/* Impedance Mode Traces */}
+            {curveMode === 'impedance' && (
+              <>
+                {/* Right Y-axis for Phase in Impedance Mode */}
+                {[-90, 0, 90].map((phaseVal) => {
+                  const py = phaseToY(phaseVal);
+                  return (
+                    <g key={`live-phase-${phaseVal}`}>
+                      {phaseVal === 0 && (
+                        <line x1={padLeft} y1={py} x2={padLeft + plotWidth} y2={py} stroke="#f59e0b" strokeDasharray="3,3" strokeWidth={1} opacity={0.4} />
+                      )}
+                      <text x={padLeft + plotWidth + 4} y={py + 3} textAnchor="start" fontSize="7.5" fontFamily="monospace" fill="#f59e0b">
+                        {phaseVal > 0 ? `+${phaseVal}°` : `${phaseVal}°`}
+                      </text>
+                    </g>
+                  );
+                })}
+
+                {/* Free-Air Driver Impedance (Dotted Violet) */}
+                <path d={freeAirImpD} fill="none" stroke="#c084fc" strokeWidth="1.2" strokeDasharray="2,2" opacity="0.75" />
+                {/* System Phase (Dashed Amber) */}
+                <path d={sysPhaseD} fill="none" stroke="#fbbf24" strokeWidth="1.4" strokeDasharray="3,3" opacity="0.85" />
+                {/* System Impedance Magnitude (Solid Cyan) */}
+                <path d={sysImpD} fill="none" stroke="#22d3ee" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+
+                {impReport?.portTuningFbHz && (
+                  <circle
+                    cx={freqToX(impReport.portTuningFbHz)}
+                    cy={phaseToY(0)}
+                    r="3.5"
+                    fill="#10b981"
+                  />
+                )}
+                {impReport?.boxResonanceFcHz && (
+                  <circle
+                    cx={freqToX(impReport.boxResonanceFcHz)}
+                    cy={valToY(impReport.peakImpedanceOhm)}
+                    r="3.5"
+                    fill="#f59e0b"
+                  />
+                )}
+              </>
+            )}
+
             {/* Fb Marker Line */}
-            {acoustics.alignment !== 'sealed' && curveMode !== 'group_delay' && (
+            {acoustics.alignment !== 'sealed' && curveMode !== 'group_delay' && curveMode !== 'impedance' && (
               <line
                 x1={freqToX(results.tuningFrequencyFb)}
                 y1={padTop}
@@ -434,6 +523,8 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
                       ? hoveredSpin?.freq || 100
                       : curveMode === 'group_delay'
                       ? hoveredGd?.freq || 100
+                      : curveMode === 'impedance'
+                      ? impPoints[hoverIndex]?.freq || 100
                       : hoveredSpl?.freq || 100
                   )}
                   y1={padTop}
@@ -442,6 +533,8 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
                       ? hoveredSpin?.freq || 100
                       : curveMode === 'group_delay'
                       ? hoveredGd?.freq || 100
+                      : curveMode === 'impedance'
+                      ? impPoints[hoverIndex]?.freq || 100
                       : hoveredSpl?.freq || 100
                   )}
                   y2={padTop + plotHeight}
@@ -471,6 +564,16 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
                   <span className="text-rose-400">Limit: {hoveredGd.cycleThresholdMs.toFixed(1)}ms</span>
                 </>
               )}
+              {curveMode === 'impedance' && impPoints[hoverIndex] && (
+                <>
+                  <span className="text-slate-400">{impPoints[hoverIndex].freq}Hz</span>
+                  <span className="text-cyan-400 font-bold">{impPoints[hoverIndex].magnitudeOhm.toFixed(1)}Ω</span>
+                  <span className="text-amber-400">{impPoints[hoverIndex].phaseDeg > 0 ? `+${impPoints[hoverIndex].phaseDeg.toFixed(0)}` : impPoints[hoverIndex].phaseDeg.toFixed(0)}°</span>
+                  {freeAirPoints[hoverIndex] && (
+                    <span className="text-purple-400">Free: {freeAirPoints[hoverIndex].magnitudeOhm.toFixed(1)}Ω</span>
+                  )}
+                </>
+              )}
               {(curveMode === 'spl' || curveMode === 'excursion' || curveMode === 'velocity') && hoveredSpl && (
                 <>
                   <span className="text-slate-400">{hoveredSpl.freq}Hz</span>
@@ -478,8 +581,8 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
                     {curveMode === 'spl'
                       ? `${hoveredSpl.dbTotal} dB`
                       : curveMode === 'excursion'
-                      ? `${hoveredSpl.excursionMm} mm`
-                      : `${hoveredSpl.airVelocityMs} m/s`}
+                      ? formatLength(hoveredSpl.excursionMm)
+                      : formatVelocity(hoveredSpl.airVelocityMs ?? 0)}
                   </span>
                 </>
               )}
@@ -503,6 +606,31 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
               ● Sound Power
             </div>
           </div>
+        ) : curveMode === 'impedance' ? (
+          <div className="mt-2.5 pt-2 border-t border-slate-800/80 grid grid-cols-3 gap-2 text-[10px] font-mono text-center tabular-nums">
+            <div className="bg-slate-900/80 border border-slate-800 p-1.5 rounded">
+              <span className="text-slate-500 block">MIN IMPEDANCE</span>
+              <span className="text-rose-400 font-bold">
+                {impReport?.minimumImpedanceOhm ?? 3.8} Ω (@ {impReport?.minImpedanceFreqHz ?? 120}Hz)
+              </span>
+            </div>
+
+            <div className="bg-slate-900/80 border border-slate-800 p-1.5 rounded">
+              <span className="text-slate-500 block">
+                {acoustics.alignment === 'sealed' ? 'BOX PEAK (Fc)' : 'TUNING DIP (Fb)'}
+              </span>
+              <span className="text-cyan-400 font-bold">
+                {acoustics.alignment === 'sealed'
+                  ? `${impReport?.boxResonanceFcHz ?? results.f3CutoffHz} Hz`
+                  : `${impReport?.portTuningFbHz ?? results.tuningFrequencyFb} Hz (0°)`}
+              </span>
+            </div>
+
+            <div className="bg-slate-900/80 border border-slate-800 p-1.5 rounded">
+              <span className="text-slate-500 block">NOMINAL LOAD</span>
+              <span className="text-emerald-400 font-bold">{impReport?.nominalImpedanceOhm ?? 8} Ω Amplifier</span>
+            </div>
+          </div>
         ) : curveMode === 'group_delay' ? (
           <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px] font-mono">
             <div className="flex items-center gap-1.5">
@@ -520,7 +648,7 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
             <span className="text-slate-400 text-[9.5px]">Threshold: 1.5 / f</span>
           </div>
         ) : (
-          <div className="mt-2.5 pt-2 border-t border-slate-800/80 grid grid-cols-3 gap-2 text-[10px] font-mono text-center">
+          <div className="mt-2.5 pt-2 border-t border-slate-800/80 grid grid-cols-3 gap-2 text-[10px] font-mono text-center tabular-nums">
             <div className="bg-slate-900/80 border border-slate-800 p-1.5 rounded">
               <span className="text-slate-500 block">F3 CUTOFF</span>
               <span className="text-amber-400 font-bold">{results.f3CutoffHz} Hz</span>
@@ -558,25 +686,56 @@ export const LiveSimulationPanel: React.FC<LiveSimulationPanelProps> = ({
                 <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
               )}
               <div>
-                <span className="font-semibold font-mono">
-                  {results.portAirVelocityMs} m/s
+                <span className="font-semibold font-mono tabular-nums">
+                  {formatVelocity(results.portAirVelocityMs)}
                 </span>
                 <span className="opacity-75 text-[10px] ml-1.5">
                   {results.isChuffingRisk
-                    ? `Chuffing risk (thresh 17 m/s). Min Ø${results.recommendedMinimumPortDiameterMm}mm.`
-                    : 'Laminar flow (<17 m/s).'}
+                    ? `Chuffing risk (thresh ${formatVelocity(17)}). Min Ø${formatLength(results.recommendedMinimumPortDiameterMm)}.`
+                    : `Laminar flow (<${formatVelocity(17)}).`}
                 </span>
               </div>
             </div>
 
             {results.isChuffingRisk && (
-              <button
-                onClick={onAutoFixPort}
-                className="px-2 py-0.5 rounded bg-rose-800 hover:bg-rose-700 text-white font-mono text-[10px] font-semibold transition shrink-0"
-              >
-                Auto-Fix
-              </button>
+              <span className="px-2 py-0.5 rounded bg-rose-950/80 border border-rose-800 text-rose-300 font-mono text-[10px] font-semibold shrink-0">
+                Turbulent
+              </span>
             )}
+          </div>
+        )}
+
+        {/* INTEGRAL 3D-PRINTED ACOUSTIC DAMPENING & TPMS MATRIX HUD TELEMETRY */}
+        {results.additiveAcousticReport && results.additiveAcousticReport.enabled && (
+          <div className="mt-2.5 p-2 rounded-lg bg-slate-950/90 border border-cyan-800/60 text-[10px] font-mono space-y-1.5 shadow-sm">
+            <div className="flex items-center justify-between text-cyan-300 font-bold">
+              <span className="flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5 text-cyan-400" />
+                <span>3D-Printed TPMS Matrix Dampening</span>
+              </span>
+              <span className="text-[9px] px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-200 border border-cyan-700/60">
+                100% Foam-Free
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-1.5 text-slate-300 pt-1 border-t border-slate-800/80">
+              <div className="bg-slate-900/80 p-1 rounded border border-slate-800">
+                <span className="text-slate-500 block text-[9px]">BACK-WAVE LOSS</span>
+                <span className="text-emerald-400 font-bold">{results.additiveAcousticReport.backWaveAttenuationDb} dB</span>
+              </div>
+              <div className="bg-slate-900/80 p-1 rounded border border-slate-800">
+                <span className="text-slate-500 block text-[9px]">FLOW RESISTIVITY (σ)</span>
+                <span className="text-cyan-400 font-bold">{results.additiveAcousticReport.jca.flowResistivityRaylsM} Rayls/m</span>
+              </div>
+              <div className="bg-slate-900/80 p-1 rounded border border-slate-800">
+                <span className="text-slate-500 block text-[9px]">RIGIDITY GAIN (EI)</span>
+                <span className="text-amber-400 font-bold">+{Math.round((results.additiveAcousticReport.stiffnessGainFactor - 1) * 100)}% ({results.additiveAcousticReport.stiffnessGainFactor}x)</span>
+              </div>
+              <div className="bg-slate-900/80 p-1 rounded border border-slate-800">
+                <span className="text-slate-500 block text-[9px]">OVERHANG ANGLE</span>
+                <span className="text-emerald-400 font-bold">≤ {results.additiveAcousticReport.maxMeasuredOverhangDeg}° (Self-Sup)</span>
+              </div>
+            </div>
           </div>
         )}
       </div>

@@ -1,6 +1,7 @@
 import React from 'react';
 import { PartMetadata } from '../types/loudspeaker.ts';
 import { X, Layers, Wrench, Volume2, ShieldCheck, Copy, Check } from 'lucide-react';
+import { useUnits } from '../context/UnitContext.tsx';
 
 interface PartInspectorModalProps {
   part: PartMetadata | null;
@@ -8,6 +9,7 @@ interface PartInspectorModalProps {
 }
 
 export const PartInspectorModal: React.FC<PartInspectorModalProps> = ({ part, onClose }) => {
+  const { unitSystem, formatLength, formatWeight } = useUnits();
   const [copied, setCopied] = React.useState(false);
 
   if (!part) return null;
@@ -44,23 +46,38 @@ ${part.machiningOperations.map(m => ` - ${m}`).join('\n')}`;
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-none animate-in fade-in duration-150">
-      <div className="relative w-full max-w-lg bg-slate-900 border border-slate-700 rounded-lg shadow-2xl overflow-hidden flex flex-col text-slate-200 font-sans">
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-none animate-in fade-in duration-150 cursor-pointer"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full max-w-lg bg-slate-900 border border-slate-700 rounded-lg shadow-2xl overflow-hidden flex flex-col text-slate-200 font-sans cursor-default"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3.5 bg-slate-950/80 border-b border-slate-800">
           <div className="flex items-center gap-2.5">
             <Layers className="w-5 h-5 text-cyan-400" />
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="font-semibold text-sm text-slate-100">{part.name}</h3>
+                {part.spatialLabel && (
+                  <span className="px-2 py-0.5 rounded font-mono font-bold text-xs bg-cyan-950 text-cyan-300 border border-cyan-500/60 shadow-sm">
+                    {part.spatialLabel}
+                  </span>
+                )}
                 {getCategoryBadge(part.category)}
               </div>
-              <p className="text-[11px] text-slate-400 font-mono mt-0.5">ID: {part.id}</p>
+              <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+                ID: {part.id} {part.spatialLocation ? `• ${part.spatialLocation}` : ''}
+              </p>
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="p-1 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition"
+            title="Close Inspector (X)"
+            className="p-1 rounded text-slate-400 hover:text-rose-300 hover:bg-slate-800 transition cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -77,37 +94,85 @@ ${part.machiningOperations.map(m => ` - ${m}`).join('\n')}`;
               <div className="bg-slate-900/90 p-2 rounded border border-slate-800/80">
                 <span className="text-[10px] text-slate-400 font-mono block">WIDTH (X)</span>
                 <span className="font-mono text-cyan-300 font-semibold text-sm">
-                  {part.dimensionsMm.w} mm
+                  {formatLength(part.dimensionsMm.w)}
                 </span>
                 <span className="text-[10px] text-slate-500 font-mono block">
-                  ({(part.dimensionsMm.w / 25.4).toFixed(2)}")
+                  ({unitSystem === 'metric' ? `${(part.dimensionsMm.w / 25.4).toFixed(2)}"` : `${part.dimensionsMm.w} mm`})
                 </span>
               </div>
               <div className="bg-slate-900/90 p-2 rounded border border-slate-800/80">
                 <span className="text-[10px] text-slate-400 font-mono block">HEIGHT (Y)</span>
                 <span className="font-mono text-cyan-300 font-semibold text-sm">
-                  {part.dimensionsMm.h} mm
+                  {formatLength(part.dimensionsMm.h)}
                 </span>
                 <span className="text-[10px] text-slate-500 font-mono block">
-                  ({(part.dimensionsMm.h / 25.4).toFixed(2)}")
+                  ({unitSystem === 'metric' ? `${(part.dimensionsMm.h / 25.4).toFixed(2)}"` : `${part.dimensionsMm.h} mm`})
                 </span>
               </div>
               <div className="bg-slate-900/90 p-2 rounded border border-slate-800/80">
                 <span className="text-[10px] text-slate-400 font-mono block">DEPTH / THICK (Z)</span>
                 <span className="font-mono text-cyan-300 font-semibold text-sm">
-                  {part.dimensionsMm.d} mm
+                  {formatLength(part.dimensionsMm.d)}
                 </span>
                 <span className="text-[10px] text-slate-500 font-mono block">
-                  ({(part.dimensionsMm.d / 25.4).toFixed(2)}")
+                  ({unitSystem === 'metric' ? `${(part.dimensionsMm.d / 25.4).toFixed(2)}"` : `${part.dimensionsMm.d} mm`})
                 </span>
               </div>
             </div>
             {part.weightKg !== undefined && (
               <div className="mt-2 text-right text-[11px] font-mono text-slate-400">
-                Estimated Component Mass: <span className="text-slate-200 font-semibold">{part.weightKg} kg</span> ({(part.weightKg * 2.20462).toFixed(2)} lbs)
+                Estimated Component Mass: <span className="text-slate-200 font-semibold">{formatWeight(part.weightKg)}</span> ({unitSystem === 'metric' ? `${(part.weightKg * 2.20462).toFixed(2)} lbs` : `${part.weightKg} kg`})
               </div>
             )}
           </div>
+
+          {/* Electroacoustic T/S Parameters (If Transducer Driver) */}
+          {part.tsParameters && (
+            <div className="bg-sky-950/40 border border-sky-800/60 rounded p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-mono text-sky-400 uppercase tracking-wider font-bold">
+                  Thiele-Small Electroacoustic Parameters
+                </span>
+                <span className="text-[10px] font-mono text-slate-400">
+                  {part.tsParameters.brand} {part.tsParameters.model}
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-1.5 text-center font-mono text-[11px]">
+                <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800">
+                  <span className="text-[9px] text-slate-400 block">Fs</span>
+                  <span className="text-cyan-300 font-bold">{part.tsParameters.fsHz} Hz</span>
+                </div>
+                <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800">
+                  <span className="text-[9px] text-slate-400 block">Qts</span>
+                  <span className="text-cyan-300 font-bold">{part.tsParameters.qts}</span>
+                </div>
+                <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800">
+                  <span className="text-[9px] text-slate-400 block">Vas</span>
+                  <span className="text-cyan-300 font-bold">{part.tsParameters.vasLiters} L</span>
+                </div>
+                <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800">
+                  <span className="text-[9px] text-slate-400 block">Xmax</span>
+                  <span className="text-amber-300 font-bold">{part.tsParameters.xmaxMm} mm</span>
+                </div>
+                <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800">
+                  <span className="text-[9px] text-slate-400 block">Power (Pe)</span>
+                  <span className="text-emerald-300 font-bold">{part.tsParameters.peWatts} W</span>
+                </div>
+                <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800">
+                  <span className="text-[9px] text-slate-400 block">Sensitivity</span>
+                  <span className="text-emerald-300 font-bold">{part.tsParameters.sensitivityDb} dB</span>
+                </div>
+                <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800">
+                  <span className="text-[9px] text-slate-400 block">Impedance</span>
+                  <span className="text-purple-300 font-bold">{part.tsParameters.impedanceOhm} Ω</span>
+                </div>
+                <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800">
+                  <span className="text-[9px] text-slate-400 block">Passband</span>
+                  <span className="text-sky-300 font-bold">{part.tsParameters.role}</span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Material */}
           <div className="bg-slate-950/60 border border-slate-800 rounded p-3">

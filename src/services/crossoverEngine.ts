@@ -262,3 +262,64 @@ export function calculateLPad(zOhm: number, attenuationDb: number) {
     rParallelOhm: Math.round(rParallel * 100) / 100,
   };
 }
+
+/**
+ * Calculates parallel R-L-C motional resonance conjugate to neutralize fundamental impedance peak at Fs
+ * Formula per Engineering Blueprint:
+ * Rmax = Re * (1 + Qms/Qes)
+ * Rc = Re + Re^2 / (Rmax - Re)
+ * Cc = Qms / [2π * Fs * (Rmax - Re)]
+ * Lc = 1 / [(2π * Fs)^2 * Cc]
+ */
+export function calculateMotionalConjugate(fsHz: number, qms: number, qes: number, reOhm: number) {
+  const safeFs = Math.max(10, fsHz);
+  const safeQes = Math.max(0.05, qes);
+  const rMax = reOhm * (1 + qms / safeQes);
+  const deltaR = Math.max(0.1, rMax - reOhm);
+  const rc = reOhm + (reOhm * reOhm) / deltaR;
+  const ccFarads = qms / (2 * Math.PI * safeFs * deltaR);
+  const ccUf = ccFarads * 1e6;
+  const lcHenries = 1 / (Math.pow(2 * Math.PI * safeFs, 2) * ccFarads);
+  const lcMh = lcHenries * 1000;
+  return {
+    rcOhm: Math.round(rc * 100) / 100,
+    ccUf: Math.round(ccUf * 10) / 10,
+    lcMh: Math.round(lcMh * 100) / 100,
+    rMaxOhm: Math.round(rMax * 100) / 100,
+  };
+}
+
+/**
+ * Calculates Constant Directivity (CD) Horn High-Frequency Bypass Capacitor Cb
+ * Formula per Engineering Blueprint:
+ * Cb = 1 / (2π * R1 * f_mass_breakpoint)
+ * Restores +6dB/octave top-octave air for compression drivers mounted on CD horns.
+ */
+export function calculateCdHornBypassCapacitor(rSeriesOhm: number, fMassBreakpointHz: number = 3500) {
+  if (rSeriesOhm <= 0 || fMassBreakpointHz <= 0) return 0;
+  const cbUf = (1 / (2 * Math.PI * rSeriesOhm * fMassBreakpointHz)) * 1e6;
+  return Math.round(cbUf * 100) / 100;
+}
+
+/**
+ * Calculates Baffle Step Compensation (BSC) Shelving Filter
+ * Transition frequency: f_step = 115 / W_b (meters)
+ * Series RL filter in woofer signal path.
+ */
+export function calculateBaffleStepCompensation(
+  baffleWidthMm: number,
+  wooferImpedanceOhm: number,
+  compensationDb: number = 6
+) {
+  const baffleWidthMeters = Math.max(0.05, baffleWidthMm / 1000);
+  const fStepHz = Math.round(115 / baffleWidthMeters);
+  const safeCompDb = Math.min(6, Math.max(1, compensationDb));
+  const rBsc = wooferImpedanceOhm * (Math.pow(10, safeCompDb / 20) - 1);
+  const lBscMh = (wooferImpedanceOhm / (2 * Math.PI * fStepHz)) * 1000;
+  return {
+    fStepHz,
+    rBscOhm: Math.round(rBsc * 100) / 100,
+    lBscMh: Math.round(lBscMh * 100) / 100,
+  };
+}
+

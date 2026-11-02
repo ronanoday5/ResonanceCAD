@@ -1,151 +1,330 @@
-import type {
-  AcousticCalculationResult,
-  AcousticParameters,
-  AlignmentType,
-  CardioidSubwooferConfig,
-  DampingAdvisorReport,
-  DampingMaterialSpec,
-  DampingMaterialType,
-  DriverPreset,
-  EigenmodePoint,
-  EnclosureDimensions,
-  EnclosureMechanicsReport,
-  GroupDelayCurvePoint,
-  InternalReflectorConfig,
-  KlippelThermalReport,
-  MaterialCostResult,
-  MaterialSpec,
-  MaterialType,
-  OblateSpheroidalWaveguideConfig,
-  PortCatalogMatch,
-  SpinoramaCurvePoint,
-  StandingWaveReport,
-  SurfaceFinishSpec,
-  SurfaceFinishType,
+import {
+  CATEGORY_SPECS,
+  SUBCATEGORY_CONFIGS,
+  type AcousticCalculationResult,
+  type AcousticParameters,
+  type AlignmentType,
+  type CardioidSubwooferConfig,
+  type CategoryHardwareConfig,
+  type DampingAdvisorReport,
+  type DampingMaterialSpec,
+  type DampingMaterialType,
+  type DriverCompatibilityReport,
+  type DriverPreset,
+  type EigenmodePoint,
+  type EnclosureDimensions,
+  type EnclosureMechanicsReport,
+  type GroupDelayCurvePoint,
+  type InternalReflectorConfig,
+  type KlippelThermalReport,
+  type MaterialCostResult,
+  type MaterialPricingConfig,
+  type MaxSplCalculationReport,
+  type MaterialSpec,
+  type MaterialType,
+  type OblateSpheroidalWaveguideConfig,
+  type PortCatalogMatch,
+  type SpeakerCategory,
+  type SpeakerCategorySpec,
+  type SpeakerSubcategory,
+  type SubcategoryConfig,
+  type SpinoramaCurvePoint,
+  type StandingWaveReport,
+  type SurfaceFinishSpec,
+  type SurfaceFinishType,
 } from '../types/loudspeaker.ts';
 import { calculateCrossoverNetwork } from './crossoverEngine.ts';
 import { computeBaffleLayout } from './baffleLayoutEngine.ts';
+import { calculateFirSimulation } from './firFilterEngine.ts';
+import { calculateSpeakonReport } from './speakonEngine.ts';
+import { synthesizeParametricPort } from './parametricPortEngine.ts';
+import { calculateAdditiveAcoustics } from './additiveAcousticEngine.ts';
+import { calculateSystemImpedance } from './impedanceParser.ts';
 
 export const MATERIAL_SPECS: Record<MaterialType, MaterialSpec> = {
   baltic_birch_18: {
     id: 'baltic_birch_18',
     name: '18mm Baltic Birch Plywood (13-ply)',
     category: 'sheet_goods',
+    subGroup: 'baltic_birch',
     nominalThicknessMm: 18,
     densityKgM3: 680,
     defaultCostPerM2: 68.0,
     flexuralModulusGpa: 12.5,
+    poissonRatio: 0.30,
+    tensileStrengthMpa: 88,
     dampingFactor: 0.022,
     textureColor: '#d6b88d',
     roughness: 0.65,
     badge: 'Birch 18mm: 12.5 GPa Reference',
+    description: '13-ply void-free cross-banded Russian/Finnish birch veneer. Industry reference for concert touring & studio monitor rigidity.',
   },
   baltic_birch_15: {
     id: 'baltic_birch_15',
     name: '15mm Baltic Birch Plywood (11-ply)',
     category: 'sheet_goods',
+    subGroup: 'baltic_birch',
     nominalThicknessMm: 15,
     densityKgM3: 680,
     defaultCostPerM2: 58.0,
     flexuralModulusGpa: 12.5,
-    dampingFactor: 0.02,
+    poissonRatio: 0.30,
+    tensileStrengthMpa: 85,
+    dampingFactor: 0.020,
     textureColor: '#dfc49c',
     roughness: 0.65,
-    badge: 'Birch 15mm: Light Cabinet',
+    badge: 'Birch 15mm: Lightweight Rigging',
+    description: '11-ply structural birch optimized for flown line array elements and portable PA tops where mass-to-stiffness ratio is critical.',
   },
   mdf_19: {
     id: 'mdf_19',
     name: '19mm Premium MDF (Medium-Density Fibreboard)',
     category: 'sheet_goods',
+    subGroup: 'mdf_hdf',
     nominalThicknessMm: 19,
     densityKgM3: 750,
     defaultCostPerM2: 32.0,
     flexuralModulusGpa: 3.8,
+    poissonRatio: 0.25,
+    tensileStrengthMpa: 22,
     dampingFactor: 0.035,
     textureColor: '#967958',
-    roughness: 0.8,
-    badge: 'MDF 19mm: High Damping',
+    roughness: 0.80,
+    badge: 'MDF 19mm: Isotropic Damping',
+    description: 'Homogeneous isotropic wood-fiber matrix with high internal mechanical loss factor (η = 0.035) ideal for studio reference monitors.',
   },
   mdf_25: {
     id: 'mdf_25',
     name: '25mm Heavy Duty MDF (1-inch)',
     category: 'sheet_goods',
+    subGroup: 'mdf_hdf',
     nominalThicknessMm: 25,
     densityKgM3: 770,
     defaultCostPerM2: 45.0,
     flexuralModulusGpa: 4.0,
+    poissonRatio: 0.25,
+    tensileStrengthMpa: 24,
     dampingFactor: 0.038,
     textureColor: '#8a6e4d',
     roughness: 0.82,
-    badge: 'MDF 25mm: High Inertia',
+    badge: 'MDF 25mm: High Inertia Baffle',
+    description: 'High-mass 25mm acoustic fibreboard offering 2.3x cubic plate bending stiffness (h³) over 19mm MDF for subwoofers.',
+  },
+  valchromat_hdf_19: {
+    id: 'valchromat_hdf_19',
+    name: '19mm Valchromat High-Density HDF',
+    category: 'sheet_goods',
+    subGroup: 'mdf_hdf',
+    nominalThicknessMm: 19,
+    densityKgM3: 920,
+    defaultCostPerM2: 74.0,
+    flexuralModulusGpa: 5.8,
+    poissonRatio: 0.26,
+    tensileStrengthMpa: 38,
+    dampingFactor: 0.042,
+    textureColor: '#2d3138',
+    roughness: 0.58,
+    badge: 'Valchromat 19mm: 920 kg/m³ HDF',
+    description: 'Resin-impregnated high-density engineered wood panel combining high mass inertia (920 kg/m³) and superior internal loss.',
   },
   marine_ply_18: {
     id: 'marine_ply_18',
     name: '18mm Marine Grade Okoume Plywood',
     category: 'sheet_goods',
+    subGroup: 'plywood_hardwood',
     nominalThicknessMm: 18,
     densityKgM3: 500,
     defaultCostPerM2: 85.0,
     flexuralModulusGpa: 10.5,
+    poissonRatio: 0.30,
+    tensileStrengthMpa: 72,
     dampingFactor: 0.025,
     textureColor: '#c59567',
-    roughness: 0.6,
-    badge: 'Marine Ply: Moisture Resistant',
+    roughness: 0.60,
+    badge: 'Marine Ply: Ultra-Light & Weatherproof',
+    description: 'BS 1088 certified WBP bonded Okoume marine plywood for outdoor festival arrays and low-weight touring cabinets.',
   },
   solid_hardwood_20: {
     id: 'solid_hardwood_20',
     name: '20mm Solid Black Walnut / Hard Maple',
     category: 'sheet_goods',
+    subGroup: 'plywood_hardwood',
     nominalThicknessMm: 20,
     densityKgM3: 720,
     defaultCostPerM2: 120.0,
     flexuralModulusGpa: 13.2,
+    poissonRatio: 0.32,
+    tensileStrengthMpa: 95,
     dampingFactor: 0.015,
     textureColor: '#5c3a21',
     roughness: 0.55,
-    badge: 'Hardwood 20mm: Luxury Solid',
+    badge: 'Hardwood 20mm: 13.2 GPa Stiffness',
+    description: 'Kiln-dried solid architectural hardwood with high longitudinal grain stiffness and heirloom acoustic aesthetics.',
+  },
+  carbon_fiber_12: {
+    id: 'carbon_fiber_12',
+    name: '12mm Autoclave Carbon Fiber (CFRP Sandwich)',
+    category: 'sheet_goods',
+    subGroup: 'carbon_fiber',
+    nominalThicknessMm: 12,
+    densityKgM3: 1480,
+    defaultCostPerM2: 245.0,
+    flexuralModulusGpa: 48.0,
+    poissonRatio: 0.28,
+    tensileStrengthMpa: 620,
+    dampingFactor: 0.026,
+    textureColor: '#16191e',
+    roughness: 0.42,
+    badge: 'CFRP 12mm: 48 GPa Aerospace Rigidity',
+    description: 'Quasi-isotropic 3K twill carbon fiber epoxy skins laminated over structural core. Pushes panel eigenmodes above mid-band.',
+  },
+  carbon_fiber_18: {
+    id: 'carbon_fiber_18',
+    name: '18mm Structural Carbon Fiber / Rohacell Core',
+    category: 'sheet_goods',
+    subGroup: 'carbon_fiber',
+    nominalThicknessMm: 18,
+    densityKgM3: 1120,
+    defaultCostPerM2: 310.0,
+    flexuralModulusGpa: 56.0,
+    poissonRatio: 0.27,
+    tensileStrengthMpa: 740,
+    dampingFactor: 0.034,
+    textureColor: '#121418',
+    roughness: 0.38,
+    badge: 'CFRP 18mm: 56 GPa Reference Monocoque',
+    description: 'Ultra-rigid 18mm carbon fiber composite sandwich with viscoelastic Rohacell PMI structural foam core for zero cabinet coloration.',
+  },
+  pa12_cf: {
+    id: 'pa12_cf',
+    name: 'Nylon 12 Carbon Fiber (PA12-CF 35 wt% MEX)',
+    category: 'filaments',
+    subGroup: 'carbon_fiber',
+    nominalThicknessMm: 18,
+    densityKgM3: 1190,
+    defaultCostPerM2: 0,
+    costPerKgUsd: 95.0,
+    flexuralModulusGpa: 11.1,
+    poissonRatio: 0.32,
+    tensileStrengthMpa: 83.5,
+    dampingFactor: 0.025,
+    textureColor: '#14171c',
+    roughness: 0.68,
+    badge: 'PA12-CF: 11.1 GPa • HDT 160°C • Low Moisture',
+    description:
+      'Industrial 35 wt% chopped carbon-fiber Nylon 12 (ISO/ASTM 52900 MEX). Matches/exceeds Baltic Birch stiffness (D = 5,928 N·m @ 18mm) with 0.25% equilibrium moisture and 160°C HDT for touring PA.',
+  },
+  pa6_cf: {
+    id: 'pa6_cf',
+    name: 'Nylon 6 Carbon Fiber (PA6-CF 25 wt% MEX)',
+    category: 'filaments',
+    subGroup: 'carbon_fiber',
+    nominalThicknessMm: 18,
+    densityKgM3: 1160,
+    defaultCostPerM2: 0,
+    costPerKgUsd: 68.0,
+    flexuralModulusGpa: 7.8,
+    poissonRatio: 0.33,
+    tensileStrengthMpa: 102,
+    dampingFactor: 0.030,
+    textureColor: '#191c22',
+    roughness: 0.70,
+    badge: 'PA6-CF: 7.8 GPa • HDT 186°C • η = 0.030',
+    description:
+      'High-temperature PA6 carbon-fiber composite (HDT 186°C @ 0.45 MPa, η = 0.030) ideal for studio monitors and co-printed TPU 95A Constrained Layer Damping (CLD) shells.',
   },
   petg_cf: {
     id: 'petg_cf',
-    name: 'Carbon Fiber PETG (PETG-CF)',
+    name: 'Carbon Fiber PETG (PETG-CF 15 wt% MEX)',
     category: 'filaments',
+    subGroup: 'carbon_fiber',
     nominalThicknessMm: 18,
-    densityKgM3: 1260,
+    densityKgM3: 1250,
     defaultCostPerM2: 0,
     costPerKgUsd: 38.0,
-    flexuralModulusGpa: 4.8,
+    flexuralModulusGpa: 5.8,
+    poissonRatio: 0.35,
+    tensileStrengthMpa: 68,
     dampingFactor: 0.028,
     textureColor: '#22252a',
     roughness: 0.72,
-    badge: 'PETG-CF: 4.8 GPa - High Heat & Toughness',
+    badge: 'PETG-CF: 5.8 GPa • Hydrophobic Studio Shell',
+    description:
+      '15 wt% chopped carbon-fiber PETG (D = 3,163 N·m @ 18mm—2.2× stiffer than MDF) with hydrophobic dimensional stability and Gyroid Re-entrant lattice damping.',
+  },
+  rigid_10k_sla: {
+    id: 'rigid_10k_sla',
+    name: 'Formlabs Rigid 10K Ceramic/Glass Resin (VPP/SLA)',
+    category: 'filaments',
+    subGroup: 'carbon_fiber',
+    nominalThicknessMm: 15,
+    densityKgM3: 1630,
+    defaultCostPerM2: 0,
+    costPerKgUsd: 299.0,
+    flexuralModulusGpa: 9.9,
+    poissonRatio: 0.31,
+    tensileStrengthMpa: 88,
+    dampingFactor: 0.018,
+    textureColor: '#cbd5e1',
+    roughness: 0.22,
+    badge: 'Rigid 10K SLA: 10.0 GPa Isotropic • HDT 218°C',
+    description:
+      'Highly glass/ceramic-filled Vat Photopolymerization (SLA) resin with 10.0 GPa isotropic modulus and 218°C HDT for WST waveguides, Geddes Fresnel phase plugs, and nearfield monitors.',
+  },
+  asa_weatherproof: {
+    id: 'asa_weatherproof',
+    name: 'Industrial ASA UV-Weatherproof (MEX + Vapor Smooth)',
+    category: 'filaments',
+    subGroup: 'carbon_fiber',
+    nominalThicknessMm: 18,
+    densityKgM3: 1080,
+    defaultCostPerM2: 0,
+    costPerKgUsd: 32.0,
+    flexuralModulusGpa: 2.0,
+    poissonRatio: 0.36,
+    tensileStrengthMpa: 42,
+    dampingFactor: 0.024,
+    textureColor: '#262930',
+    roughness: 0.30,
+    badge: 'ASA UV-Stable: Acetone Vapor Polish (Ra 1.5µm)',
+    description:
+      'UV-stabilized Acrylonitrile Styrene Acrylate with low Z-axis anisotropy (-10% ZX drop) and acetone vapor smoothing capability for outdoor PA horns and shells.',
   },
   pla_standard: {
     id: 'pla_standard',
-    name: 'Standard PLA Thermoplastic',
+    name: 'Standard PLA Thermoplastic (3D Print)',
     category: 'filaments',
+    subGroup: 'carbon_fiber',
     nominalThicknessMm: 18,
     densityKgM3: 1240,
     defaultCostPerM2: 0,
     costPerKgUsd: 20.0,
     flexuralModulusGpa: 3.8,
+    poissonRatio: 0.36,
+    tensileStrengthMpa: 52,
     dampingFactor: 0.018,
     textureColor: '#1e2025',
     roughness: 0.35,
-    badge: 'Standard PLA: 3.8 GPa - Low Cost Prototyping',
+    badge: 'Standard PLA: 3.8 GPa - Rapid Prototype',
+    description: 'Rigid polylactic acid biopolymer filament for desktop acoustic waveguide and compact monitor prototyping.',
   },
   pla_cf: {
     id: 'pla_cf',
-    name: 'Carbon Fiber PLA (PLA-CF)',
+    name: 'Carbon Fiber PLA (PLA-CF 3D Print)',
     category: 'filaments',
+    subGroup: 'carbon_fiber',
     nominalThicknessMm: 18,
     densityKgM3: 1250,
     defaultCostPerM2: 0,
     costPerKgUsd: 34.0,
     flexuralModulusGpa: 5.4,
+    poissonRatio: 0.34,
+    tensileStrengthMpa: 74,
     dampingFactor: 0.024,
     textureColor: '#181a1d',
     roughness: 0.72,
-    badge: 'PLA-CF: 5.4 GPa - Maximum Rigidity',
+    badge: 'PLA-CF: 5.4 GPa - Rigid Additive Shell',
+    description: 'High-modulus carbon-fiber filled PLA matrix providing low-warp dimensional stability and elevated flexural stiffness.',
   },
 };
 
@@ -295,6 +474,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 87.2,
     reOhm: 3.3,
     leMh: 0.95,
+    categoryTags: ['studio_sub', 'live_sub'],
     description: 'Ultra-low distortion 10" subwoofer driver with heavy cast aluminum basket and thick anodized black aluminum cone.',
   },
   {
@@ -320,6 +500,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 88.0,
     reOhm: 5.8,
     leMh: 0.35,
+    categoryTags: ['studio_monitor'],
     description: 'Legendary audiophile sliced paper cone woofer with SD-1 patented magnetic motor and low-loss linear suspension.',
   },
   {
@@ -345,6 +526,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 87.5,
     reOhm: 5.9,
     leMh: 0.18,
+    categoryTags: ['studio_monitor'],
     description: 'Precision black anodized aluminum cone woofer with aerodynamically optimized cast aluminum chassis.',
   },
   {
@@ -370,6 +552,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 89.0,
     reOhm: 3.7,
     leMh: 0.12,
+    categoryTags: ['studio_monitor'],
     description: 'Revolutionary NeutralSurround geometry eliminating force modulation distortion with massive linear stroke.',
   },
   {
@@ -395,6 +578,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 91.5,
     reOhm: 3.2,
     leMh: 0.01,
+    categoryTags: ['studio_monitor'],
     description: 'State-of-the-art Beryllium dome tweeter with AirCirc 6-neodymium magnet matrix for maximum transparency.',
   },
   {
@@ -420,6 +604,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 91.0,
     reOhm: 3.0,
     leMh: 0.01,
+    categoryTags: ['studio_monitor'],
     description: 'Patented Dual Ring Radiator diaphragm with rear acoustic damping chamber for extended frequency response above 40kHz.',
   },
   {
@@ -445,6 +630,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 87.0,
     reOhm: 5.7,
     leMh: 0.10,
+    categoryTags: ['studio_monitor'],
     description: 'Neodymium motor 4.5-inch midrange transducer with open aerodynamic chassis for zero reflection back-waves.',
   },
   // --- JBL PROFESSIONAL COMPONENT TRANSDUCERS (jblpro.com/en-US/product_families/components) ---
@@ -471,6 +657,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 97.0,
     reOhm: 5.0,
     leMh: 1.75,
+    categoryTags: ['live_top', 'live_sub'],
     description: 'Industry-standard 15" sound reinforcement and studio monitor woofer featuring patented Vented Gap Cooling (VGC™) and Symmetrical Field Geometry (SFG™).',
   },
   {
@@ -496,6 +683,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 95.0,
     reOhm: 5.3,
     leMh: 1.50,
+    categoryTags: ['live_top'],
     description: 'High-power 12" low-frequency transducer with 4" edgewound ribbon voice coil and VGC™ thermal management for compact high-output two-way systems.',
   },
   {
@@ -521,6 +709,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 98.0,
     reOhm: 5.0,
     leMh: 1.75,
+    categoryTags: ['live_sub'],
     description: 'Tour-grade 18" low-frequency transducer designed for concert touring and high-impact sound reinforcement systems.',
   },
   {
@@ -546,6 +735,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 99.0,
     reOhm: 4.7,
     leMh: 1.60,
+    categoryTags: ['live_sub', 'studio_sub'],
     description: 'Premier 18" cinema and touring subwoofer featuring Super Vented Gap (SVG™) topology for minimal power compression and massive bass impact.',
   },
   {
@@ -571,6 +761,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 96.0,
     reOhm: 5.3,
     leMh: 1.85,
+    categoryTags: ['live_sub', 'studio_sub'],
     description: 'Modern Differential Drive® dual voice-coil neodymium 18" subwoofer transducer with integrated heat sinking and massive linear excursion.',
   },
   {
@@ -596,6 +787,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 97.5,
     reOhm: 5.1,
     leMh: 1.35,
+    categoryTags: ['live_top'],
     description: 'Differential Drive® 15" neodymium transducer combining 800W continuous capacity, ultra-low distortion, and high acoustic sensitivity.',
   },
   {
@@ -621,6 +813,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 96.0,
     reOhm: 5.4,
     leMh: 0.32,
+    categoryTags: ['live_top', 'studio_monitor'],
     description: 'High-sensitivity 8" Differential Drive® cone midrange driver for large-format 3-way line arrays and reference monitoring systems.',
   },
   {
@@ -646,6 +839,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 111.0,
     reOhm: 4.3,
     leMh: 0.15,
+    categoryTags: ['live_top'],
     description: 'Flagship 2" exit compression driver featuring 4" pure titanium diaphragm, Coherent Wave™ phasing plug, and neodymium magnetic motor.',
   },
   {
@@ -671,6 +865,7 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 110.0,
     reOhm: 3.2,
     leMh: 0.10,
+    categoryTags: ['live_top'],
     description: 'Classic 1" exit compression driver with diamond-pattern suspension titanium diaphragm and high-energy ceramic magnetic structure.',
   },
   {
@@ -696,9 +891,119 @@ export const DRIVER_PRESETS: DriverPreset[] = [
     splSensitivityDb: 108.0,
     reOhm: 4.8,
     leMh: 0.08,
+    categoryTags: ['live_top'],
     description: 'Compact annular polymer ring diaphragm neodymium compression driver with low distortion and smooth top-end transient response.',
   },
+  {
+    id: 'bc_18tbx100',
+    brand: 'B&C Speakers',
+    model: '18TBX100 18" Concert Subwoofer',
+    nominalDiameterInch: 18,
+    fs: 34.0,
+    qts: 0.33,
+    qes: 0.35,
+    qms: 7.2,
+    vas: 212.0,
+    xmax: 9.0,
+    pe: 1200,
+    sd: 1210,
+    voiceCoilDiameterMm: 100,
+    frameOuterDiameterMm: 460,
+    cutoutDiameterMm: 422,
+    mountingDepthMm: 209,
+    magnetDiameterMm: 220,
+    magnetDepthMm: 60,
+    displacementLiters: 9.0,
+    splSensitivityDb: 98.0,
+    reOhm: 5.1,
+    leMh: 2.4,
+    categoryTags: ['live_sub'],
+    description: 'Touring standard 18" subwoofer with 100mm (4") inside/outside copper voice coil and ventilated magnet assembly.',
+  },
+  {
+    id: 'bc_18sw115',
+    brand: 'B&C Speakers',
+    model: '18SW115 18" Extreme Power Subwoofer',
+    nominalDiameterInch: 18,
+    fs: 32.0,
+    qts: 0.32,
+    qes: 0.34,
+    qms: 5.8,
+    vas: 187.0,
+    xmax: 14.0,
+    pe: 1700,
+    sd: 1210,
+    voiceCoilDiameterMm: 116,
+    frameOuterDiameterMm: 460,
+    cutoutDiameterMm: 422,
+    mountingDepthMm: 242,
+    magnetDiameterMm: 140,
+    magnetDepthMm: 65,
+    displacementLiters: 10.5,
+    splSensitivityDb: 97.0,
+    reOhm: 5.0,
+    leMh: 1.9,
+    categoryTags: ['live_sub'],
+    description: 'Flagship 18" neodymium subwoofer driver with 116mm (4.5") voice coil delivering 3400W continuous power handling.',
+  },
+  {
+    id: 'bc_12ndl76',
+    brand: 'B&C Speakers',
+    model: '12NDL76 12" Neodymium High-SPL Mid-Bass',
+    nominalDiameterInch: 12,
+    fs: 50.0,
+    qts: 0.22,
+    qes: 0.23,
+    qms: 4.8,
+    vas: 68.0,
+    xmax: 6.5,
+    pe: 400,
+    sd: 522,
+    voiceCoilDiameterMm: 76,
+    frameOuterDiameterMm: 315,
+    cutoutDiameterMm: 282,
+    mountingDepthMm: 135,
+    magnetDiameterMm: 120,
+    magnetDepthMm: 42,
+    displacementLiters: 3.5,
+    splSensitivityDb: 99.0,
+    reOhm: 5.3,
+    leMh: 1.1,
+    categoryTags: ['live_top'],
+    description: 'High-efficiency 12" neodymium transducer delivering 99dB 1W/1m sensitivity for high-output two-way live tops.',
+  },
 ];
+
+export function getDriversForCategory(category: SpeakerCategory, showAll: boolean = false): DriverPreset[] {
+  if (showAll) return DRIVER_PRESETS;
+  const filtered = DRIVER_PRESETS.filter((d) => d.categoryTags?.includes(category));
+  return filtered.length > 0 ? filtered : DRIVER_PRESETS;
+}
+
+export function getDriversForSubcategory(
+  subcategory: SpeakerSubcategory,
+  category?: SpeakerCategory,
+  showAll: boolean = false
+): DriverPreset[] {
+  if (showAll) return DRIVER_PRESETS;
+  const subConfig = SUBCATEGORY_CONFIGS[subcategory];
+  const parentCat = subConfig ? subConfig.parentCategory : (category || 'studio_monitor');
+  
+  const recommended = subConfig
+    ? DRIVER_PRESETS.filter((d) => subConfig.recommendedDriverIds.includes(d.id))
+    : [];
+  
+  const categoryDrivers = DRIVER_PRESETS.filter((d) => d.categoryTags?.includes(parentCat));
+  
+  const combined = [...recommended];
+  categoryDrivers.forEach((d) => {
+    if (!combined.some((c) => c.id === d.id)) {
+      combined.push(d);
+    }
+  });
+
+  return combined.length > 0 ? combined : DRIVER_PRESETS;
+}
 
 export function calculateOptimalAlignment(driver: DriverPreset, alignment: AlignmentType) {
   const { fs, qts, vas } = driver;
@@ -741,84 +1046,7 @@ export function calculateOptimalAlignment(driver: DriverPreset, alignment: Align
   }
 }
 
-export const COTS_PORT_CATALOG = [
-  { name: 'Precision Port 2" Flared Aeroport Kit', innerDiameterMm: 50.8, maxCutLengthMm: 350, type: 'round' },
-  { name: 'Precision Port 3" Flared Aeroport Kit', innerDiameterMm: 76.2, maxCutLengthMm: 450, type: 'round' },
-  { name: 'Precision Port 4" Flared Aeroport Kit', innerDiameterMm: 101.6, maxCutLengthMm: 500, type: 'round' },
-  { name: 'Precision Port 6" Flared Aeroport Kit', innerDiameterMm: 152.4, maxCutLengthMm: 600, type: 'round' },
-  { name: 'Schedule 40 2" PVC Pipe', innerDiameterMm: 52.5, maxCutLengthMm: 600, type: 'round' },
-  { name: 'Schedule 40 3" PVC Pipe', innerDiameterMm: 77.9, maxCutLengthMm: 600, type: 'round' },
-  { name: 'Schedule 40 4" PVC Pipe', innerDiameterMm: 102.3, maxCutLengthMm: 600, type: 'round' },
-  { name: 'Schedule 40 6" PVC Pipe', innerDiameterMm: 154.1, maxCutLengthMm: 600, type: 'round' },
-];
 
-function evaluatePortCatalogMatch(
-  portType: 'round' | 'slot',
-  portDiameterMm: number,
-  portLengthMm: number,
-  portAirVelocityMs: number,
-  optimalFlareRadiusMm: number,
-  intD: number
-): PortCatalogMatch {
-  const isLaminar = portAirVelocityMs <= 17;
-  const salvattiFlareRadiusMm = Math.max(14, Math.round((portDiameterMm / 2) * 0.5)); // Salvatti criterion: rf >= 0.5 * r_inner
-  const mountingCollarDiameterMm = Math.round((portDiameterMm + 2 * salvattiFlareRadiusMm + 14) * 10) / 10;
-
-  const needsModularSplit = portLengthMm > 220;
-  const splitSegmentCount = needsModularSplit ? Math.ceil(portLengthMm / 180) : 1;
-  const printDimensionsMm = {
-    widthMm: mountingCollarDiameterMm,
-    heightMm: mountingCollarDiameterMm,
-    depthMm: portLengthMm,
-  };
-
-  if (portType === 'round' && isLaminar) {
-    const cotsMatch = COTS_PORT_CATALOG.find((item) => {
-      const dev = Math.abs(item.innerDiameterMm - portDiameterMm) / portDiameterMm;
-      return dev <= 0.05 && portLengthMm <= item.maxCutLengthMm && portLengthMm <= (intD - 35);
-    });
-
-    if (cotsMatch) {
-      return {
-        status: 'cots_available',
-        cotsPartName: cotsMatch.name,
-        cotsInnerDiameterMm: cotsMatch.innerDiameterMm,
-        cotsCutLengthMm: portLengthMm,
-        printDimensionsMm,
-        needsModularSplit: false,
-        splitSegmentCount: 1,
-        structuralWallThicknessMm: 3.0,
-        mountingCollarDiameterMm,
-        salvattiFlareRadiusMm,
-        peakVelocityMs: Math.round(portAirVelocityMs * 10) / 10,
-        isLaminar: true,
-        reason: `Standard commercial match found (${cotsMatch.name}). Requires standard tube cutting to ${portLengthMm}mm.`,
-      };
-    }
-  }
-
-  let reason = 'Custom aerodynamic geometry required for zero-chuffing laminar boundary conditions.';
-  if (portAirVelocityMs > 17) {
-    reason = `Air velocity (${Math.round(portAirVelocityMs * 10) / 10} m/s) exceeds 17 m/s boundary layer threshold; custom Salvatti flared bellmouth required.`;
-  } else if (portType === 'slot') {
-    reason = 'Custom slot port architecture optimized for cabinet structural shelf bracing.';
-  } else if (needsModularSplit) {
-    reason = `Port length (${portLengthMm}mm) exceeds standard 220mm printer Z-height; parametric split into ${splitSegmentCount} interlocking slip-fit segments.`;
-  }
-
-  return {
-    status: 'custom_3d_print',
-    printDimensionsMm,
-    needsModularSplit,
-    splitSegmentCount,
-    structuralWallThicknessMm: 3.0,
-    mountingCollarDiameterMm,
-    salvattiFlareRadiusMm,
-    peakVelocityMs: Math.round(portAirVelocityMs * 10) / 10,
-    isLaminar,
-    reason,
-  };
-}
 
 
 export function calculateStandingWaves(
@@ -978,6 +1206,12 @@ export function calculateAcoustics(
     ? materialPricing.wastePercentage
     : 15;
 
+  // Loudspeaker Archetype & Subcategory Specification Resolution
+  const activeCategory: SpeakerCategory = dimensions.category || 'studio_monitor';
+  const categorySpec = CATEGORY_SPECS[activeCategory] || CATEGORY_SPECS.studio_monitor;
+  const activeSubcat: SpeakerSubcategory = dimensions.subcategory || categorySpec.defaultSubcategory;
+  const subcatConfig = SUBCATEGORY_CONFIGS[activeSubcat] || SUBCATEGORY_CONFIGS[categorySpec.defaultSubcategory];
+
   // Internal dimensions (mm)
   const intW = Math.max(50, dimensions.externalWidthMm - 2 * wallT);
   const intH = Math.max(50, dimensions.externalHeightMm - 2 * wallT);
@@ -985,18 +1219,23 @@ export function calculateAcoustics(
 
   const grossVolumeLiters = (intW * intH * intD) / 1000000;
 
-  // Woofer volume displacement
+  // Woofer volume displacement & count (auto-enforced twin woofers for dual-driver subcategories)
   const wooferAssign = driverAssignments.woofer;
-  const wooferQuantity = topology === 'mtm' ? 2 : (wooferAssign.quantity || 1);
+  const wooferQuantity = subcatConfig.wooferQuantity === 2 ? 2 : (topology === 'mtm' ? 2 : (wooferAssign.quantity || 1));
   const wooferSingle = wooferAssign.driver;
   const driverDisplacementLiters = (wooferSingle.displacementLiters || 1.5) * wooferQuantity;
 
   // Midrange isolated chamber
   let midrangeChamberVolumeLiters = 0;
-  if (topology === 'three_way') {
+  if (topology === 'three_way' || subcatConfig.hasMidrangeChamber) {
     const midDrv = driverAssignments.midrange.driver;
     midrangeChamberVolumeLiters = Math.max(1.2, (midDrv.vas || 6.5) * 0.25);
   }
+
+  // Commercial plate amplifier chassis displacement
+  const plateAmpDisplacementLiters = subcatConfig.hasPlateAmplifier && subcatConfig.commercialPlateAmp
+    ? subcatConfig.commercialPlateAmp.displacementLiters
+    : 0;
 
   // Bracing displacement
   let bracingMultiplier = 0.04;
@@ -1009,64 +1248,36 @@ export function calculateAcoustics(
   const activeDampingMatSpec = DAMPING_MATERIAL_SPECS[activeDampingMatKey] || DAMPING_MATERIAL_SPECS.dacron_polyfill;
   const dampingVirtualFactor = 1 + (dampingFillPercent / 100) * (activeDampingMatSpec.maxIsothermalExpansionPercent / 100);
 
-  // Port area & end correction factor
-  let portAreaCm2 = 0;
-  let effectiveDvCm = 0;
-  let kEndCorrection = 0.732;
-
-  // Optimal flare radius recommendation (Salvatti criterion: rf >= 0.5 * r_inner)
-  const optimalFlareRadiusMm = Math.max(14, Math.round((portDiameterMm / 2) * 0.5));
-  const activeFlareRadiusMm = flareRadiusMm || optimalFlareRadiusMm;
-
-  if (portType === 'round') {
-    const radiusCm = (portDiameterMm / 10) / 2;
-    portAreaCm2 = Math.PI * radiusCm * radiusCm * numberOfPorts;
-    effectiveDvCm = (portDiameterMm / 10);
-    // Flare end-correction modifier
-    // Flared termination increases effective end correction length
-    const flareRatio = (activeFlareRadiusMm / 10) / radiusCm;
-    const singleFlareCorrection = 0.732 + 0.5 * Math.min(1.2, flareRatio);
-    kEndCorrection = isDoubleFlared ? singleFlareCorrection * 1.8 : singleFlareCorrection;
-  } else {
-    // Slot Port: slotWidthMm x slotHeightMm
-    const activeSlotW = slotWidthMm || Math.max(100, intW);
-    const activeSlotH = slotHeightMm || 45;
-    const wCm = activeSlotW / 10;
-    const hCm = activeSlotH / 10;
-    portAreaCm2 = wCm * hCm * numberOfPorts;
-    // Hydraulic diameter: Dh = 2 * W * H / (W + H)
-    const dhCm = (2 * wCm * hCm) / Math.max(0.1, wCm + hCm);
-    effectiveDvCm = Math.sqrt((portAreaCm2 / numberOfPorts) * 4 / Math.PI);
-    // Slot port on floor has half-space boundary termination: k ~ 1.25 to 1.5
-    kEndCorrection = 1.35;
-  }
-
   let activeFb = targetFb;
   if (alignment === 'sealed') {
     activeFb = wooferSingle.fs * (targetQtc / wooferSingle.qts);
   }
 
-  let estNetVb = grossVolumeLiters - driverDisplacementLiters - bracingDisplacementLiters - midrangeChamberVolumeLiters;
+  // 3D-Printed Integral Acoustic Dampening & TPMS Matrix Report
+  const additiveAcousticReport = calculateAdditiveAcoustics(dimensions, acousticParams);
+  const matrixDisplacedL = additiveAcousticReport.enabled ? additiveAcousticReport.displacedSolidVolumeLiters : 0;
+
+  let estNetVb = grossVolumeLiters - driverDisplacementLiters - bracingDisplacementLiters - midrangeChamberVolumeLiters - plateAmpDisplacementLiters - matrixDisplacedL;
   if (estNetVb <= 1) estNetVb = 1;
 
-  let portLengthMm = 0;
-  let portDisplacementLiters = 0;
+  // Synthesize Custom Parametric Port (100% procedural, zero COTS dependencies)
+  const portSynthesis = synthesizeParametricPort(
+    dimensions,
+    acousticParams,
+    estNetVb,
+    activeFb,
+    intW,
+    intH,
+    intD
+  );
 
-  if (alignment !== 'sealed' && portAreaCm2 > 0 && activeFb > 10) {
-    const effectiveApPerPort = portAreaCm2 / numberOfPorts;
-    let currentVb = estNetVb;
-
-    for (let iter = 0; iter < 3; iter++) {
-      // Lv (cm) = (23562.5 * Ap / (Fb^2 * Vb)) - (k * Dv)
-      const lvCm = (23562.5 * effectiveApPerPort / (activeFb * activeFb * currentVb)) - (kEndCorrection * (effectiveDvCm / 2));
-      const computedLengthCm = Math.max(4, lvCm);
-      const outerRadiusCm = (effectiveDvCm / 2) + (portType === 'round' ? 0.35 : 1.8);
-      const outerApCm2 = Math.PI * outerRadiusCm * outerRadiusCm;
-      portDisplacementLiters = ((outerApCm2 * computedLengthCm * numberOfPorts) / 1000);
-      currentVb = Math.max(1, estNetVb - portDisplacementLiters);
-      portLengthMm = Math.round(computedLengthCm * 10);
-    }
-  }
+  const portLengthMm = portSynthesis.effectiveLengthMm;
+  const portDisplacementLiters = portSynthesis.portDisplacementLiters;
+  const portAirVelocityMs = portSynthesis.portAirVelocityMs;
+  const optimalFlareRadiusMm = portSynthesis.optimalFlareRadiusMm;
+  const activeFlareRadiusMm = flareRadiusMm || optimalFlareRadiusMm;
+  const portMatch = portSynthesis.portMatch;
+  const parametricPort = portSynthesis.parametricPort;
 
   const netVolumeLiters = Math.max(1, estNetVb - portDisplacementLiters);
   const effectiveAcousticVolumeLiters = netVolumeLiters * dampingVirtualFactor;
@@ -1096,32 +1307,17 @@ export function calculateAcoustics(
     f10CutoffHz = f3CutoffHz * 0.68;
   }
 
-  // Richard Small air velocity formula:
-  // Vd = peak volume displacement in m^3
   const totalSdM2 = (wooferSingle.sd * wooferQuantity) * 1e-4;
-  const xmaxM = wooferSingle.xmax * 1e-3;
-  const vdM3 = totalSdM2 * xmaxM;
-  const portAreaM2 = portAreaCm2 * 1e-4;
-
-  let portAirVelocityMs = 0;
-  if (portAreaM2 > 0 && activeFb > 0) {
-    portAirVelocityMs = (2 * Math.PI * activeFb * vdM3) / portAreaM2;
-  }
-
   const vdLiters = (totalSdM2 * 1e4 * wooferSingle.xmax) / 10000;
   const recommendedMinimumPortDiameterMm = Math.round(0.83 * Math.sqrt(vdLiters * activeFb) * 25.4 * 10) / 10;
-  // If flared, chuffing threshold is extended from 15 m/s to 19 m/s
-  const turbulenceThreshold = (portType === 'round' && activeFlareRadiusMm >= 12) ? 19 : 16;
-  const isChuffingRisk = portAirVelocityMs > turbulenceThreshold;
 
-  const portMatch = evaluatePortCatalogMatch(
-    portType,
-    portDiameterMm,
-    Math.round(portLengthMm),
-    portAirVelocityMs,
-    optimalFlareRadiusMm,
-    intD
-  );
+  // Archetype-specific aerodynamic chuffing threshold AND 34 m/s sonic limit:
+  // Studio Monitor (≤ 12 m/s), Studio Sub (≤ 17 m/s), Live Top (≤ 22 m/s), Live Sub (≤ 25 m/s), Absolute Sonic Ceiling (< 34 m/s)
+  const flareBonusMs = (portType === 'round' && activeFlareRadiusMm >= 12) ? 2.5 : 0;
+  const maxVelocityLimit = Math.min(34.0, categorySpec.maxRecommendedPortVelocityMs + flareBonusMs);
+  const isChuffingRisk =
+    alignment !== 'sealed' &&
+    (portAirVelocityMs > maxVelocityLimit || parametricPort.exceedsSonicLimit34Ms);
 
   const maxInternalDimM = Math.max(intW, intH, intD) / 1000;
   const firstInternalResonanceHz = Math.round(343 / (2 * maxInternalDimM));
@@ -1147,7 +1343,8 @@ export function calculateAcoustics(
     bracingLevel,
     dimensions.material,
     acousticParams.hasConstrainedLayerDamping,
-    acousticParams.absorptionMaterialType
+    acousticParams.absorptionMaterialType,
+    materialPricing
   );
 
   const effectiveDensity = mechanics.effectiveDensityKgM3 || activeDensity;
@@ -1178,6 +1375,118 @@ export function calculateAcoustics(
   const freqResponse = generateMultiBandFrequencyCurve(alignment, acousticParams, effectiveAcousticVolumeLiters, activeFb, calculatedQtc, portAirVelocityMs);
 
   const standingWaves = calculateStandingWaves(dimensions, acousticParams);
+  if (additiveAcousticReport.enabled) {
+    standingWaves.standingWaveRiskLevel = 'low';
+    standingWaves.diffuserActive = true;
+    standingWaves.diffuserAttenuationDb = additiveAcousticReport.standingWaveMitigationDb;
+  }
+
+  // Thermal & Large Signal Metrics
+  const klippelThermal = calculateKlippelThermalShift(wooferSingle, acousticParams.thermalDriveLevel);
+  const maxContinuousPowerW = Math.round(wooferSingle.pe * wooferQuantity);
+  const powerCompressionDb = klippelThermal.powerCompressionDb;
+  const totalSensitivityDb = wooferSingle.splSensitivityDb + (wooferQuantity > 1 ? 3 : 0);
+  const maxSplDbAt1m = Math.round(
+    (totalSensitivityDb + 10 * Math.log10(Math.max(1, maxContinuousPowerW)) - powerCompressionDb) * 10
+  ) / 10;
+
+  const velDelta = Math.round((maxVelocityLimit - portAirVelocityMs) * 10) / 10;
+  let portNoiseMargin = '';
+  let portNoiseStatus: 'nominal' | 'caution' | 'critical' = 'nominal';
+  if (alignment === 'sealed') {
+    portNoiseMargin = 'Sealed (0.0 m/s • Chuff-Free)';
+    portNoiseStatus = 'nominal';
+  } else if (velDelta >= 2.0) {
+    portNoiseMargin = `+${velDelta} m/s Headroom (Laminar)`;
+    portNoiseStatus = 'nominal';
+  } else if (velDelta >= 0) {
+    portNoiseMargin = `+${velDelta} m/s (Near ${categorySpec.name} Limit)`;
+    portNoiseStatus = 'caution';
+  } else {
+    portNoiseMargin = `${velDelta} m/s Excess (Turbulence Risk)`;
+    portNoiseStatus = 'critical';
+  }
+
+  let categoryRecommendation = '';
+  switch (activeCategory) {
+    case 'studio_monitor':
+      categoryRecommendation =
+        'Optimized for ruler-flat Listening Window and low phase distortion. Chamfer baffle edges and maintain air velocity ≤ 12 m/s.';
+      break;
+    case 'studio_sub':
+      categoryRecommendation =
+        'Infra-bass tuned for deep F3 ≤ 25 Hz cutoff. Use decoupled isolation feet and dense internal damping to eliminate box ringing.';
+      break;
+    case 'live_top':
+      categoryRecommendation =
+        'High-efficiency sound reinforcement. Pair with waveguide/horn and apply an 80 Hz high-pass crossover boundary for subwoofer arrays.';
+      break;
+    case 'live_sub':
+      categoryRecommendation =
+        'Touring concert output. Flared bellmouth aeroports and rigid matrix bracing handle extreme continuous power without dynamic choking.';
+      break;
+  }
+
+  const categoryTelemetry = {
+    category: activeCategory,
+    maxSplDbAt1m,
+    maxContinuousPowerW,
+    portNoiseMargin,
+    portNoiseStatus,
+    categoryRecommendation,
+    powerCompressionDb,
+  };
+
+  const subcategoryTelemetry = {
+    subcategory: activeSubcat,
+    name: subcatConfig.name,
+    engineeringBadge: subcatConfig.engineeringBadge,
+    targetDescription: subcatConfig.tagline,
+    wooferQuantity,
+    wiring: (wooferQuantity === 2 ? 'parallel' : 'single') as 'single' | 'parallel',
+    combinedSdCm2: Math.round(wooferSingle.sd * wooferQuantity),
+    combinedVdCm3: Math.round(wooferSingle.sd * wooferQuantity * wooferSingle.xmax * 10) / 10,
+    isDualWoofer: wooferQuantity === 2,
+    isCoaxial: !!subcatConfig.isCoaxial,
+    isBandpass: !!subcatConfig.isBandpass,
+    hasPlateAmplifier: !!subcatConfig.hasPlateAmplifier,
+    plateAmpDisplacementLiters: subcatConfig.hasPlateAmplifier ? subcatConfig.commercialPlateAmp?.displacementLiters : undefined,
+    plateAmpContinuousPowerW: subcatConfig.hasPlateAmplifier ? subcatConfig.commercialPlateAmp?.powerRmsW : undefined,
+    bandpassFrontVbLiters: subcatConfig.bandpassFrontVbLiters,
+    bandpassRearVbLiters: subcatConfig.bandpassRearVbLiters,
+  };
+
+  const driverCompatibility = validateDriverCompatibility(wooferSingle, activeCategory, activeSubcat);
+
+  const maxSplReport = calculateMaxSplReport(
+    acousticParams,
+    wooferSingle,
+    wooferQuantity,
+    activeCategory,
+    f3CutoffHz,
+    alignment,
+    klippelThermal
+  );
+
+  const computedLayout = computeBaffleLayout(dimensions, acousticParams, {
+    portLengthMm: Math.round(portLengthMm),
+    optimalFlareRadiusMm,
+  });
+
+  const speakonReport = calculateSpeakonReport(
+    dimensions,
+    acousticParams,
+    Math.round(portLengthMm),
+    computedLayout.resolvedPortPlacement
+  );
+
+  const systemImpedance = calculateSystemImpedance(
+    acousticParams,
+    effectiveAcousticVolumeLiters,
+    activeFb,
+    calculatedQtc,
+    wooferSingle
+  );
 
   return {
     netVolumeLiters: Math.round(netVolumeLiters * 10) / 10,
@@ -1198,16 +1507,14 @@ export function calculateAcoustics(
     recommendedMinimumPortDiameterMm: Math.max(35, recommendedMinimumPortDiameterMm),
     optimalFlareRadiusMm,
     portMatch,
+    parametricPort,
     standingWaves,
     totalWeightKg,
     firstInternalResonanceHz,
     materialCost,
     crossover,
     frequencyResponse: freqResponse,
-    layout: computeBaffleLayout(dimensions, acousticParams, {
-      portLengthMm: Math.round(portLengthMm),
-      optimalFlareRadiusMm,
-    }),
+    layout: computedLayout,
     // Advanced Electroacoustic Metrics from Training Data
     spinorama: generateSpinoramaCurves(freqResponse, acousticParams, dimensions),
     groupDelay: calculateGroupDelay(
@@ -1216,7 +1523,7 @@ export function calculateAcoustics(
       calculatedQtc,
       activeFb
     ),
-    klippelThermal: calculateKlippelThermalShift(wooferSingle, acousticParams.thermalDriveLevel),
+    klippelThermal,
     waveguide: calculateOblateSpheroidalWaveguide(acousticParams, dimensions),
     cardioid: calculateCardioidSubwoofer(acousticParams, dimensions, activeFb),
     mechanics,
@@ -1229,6 +1536,333 @@ export function calculateAcoustics(
       acousticParams.absorptionMaterialType,
       dampingFillPercent
     ),
+    categoryTelemetry,
+    subcategoryTelemetry,
+    maxSplReport,
+    driverCompatibility,
+    firReport: calculateFirSimulation(acousticParams),
+    speakonReport,
+    additiveAcousticReport,
+    systemImpedance,
+  };
+}
+
+/**
+ * Electroacoustic Qualification & Compatibility Validation Engine
+ * Validates driver parameters against industry-standard engineering criteria
+ * for active loudspeaker archetype (studio_monitor, studio_sub, live_top, live_sub) and subcategory.
+ */
+export function validateDriverCompatibility(
+  driver: DriverPreset,
+  category: SpeakerCategory,
+  subcategory?: SpeakerSubcategory
+): DriverCompatibilityReport {
+  const reasons: string[] = [];
+  let status: 'optimal' | 'suboptimal' | 'incompatible' = 'optimal';
+
+  const catSpec = CATEGORY_SPECS[category] || CATEGORY_SPECS.studio_monitor;
+  const subConfig = subcategory ? SUBCATEGORY_CONFIGS[subcategory] : undefined;
+  const size = driver.nominalDiameterInch;
+  const fs = driver.fs;
+  const xmax = driver.xmax;
+  const pe = driver.pe;
+  const sens = driver.splSensitivityDb;
+  const qts = driver.qts;
+  const vcMm = driver.voiceCoilDiameterMm || 38;
+
+  // Recommended alternatives list
+  const recIds = subConfig?.recommendedDriverIds || catSpec?.recommendedDriverIds || [];
+  const recommendedAlternatives = DRIVER_PRESETS.filter((d) => recIds.includes(d.id)).map(
+    (d) => `[${d.brand}] ${d.model}`
+  );
+
+  if (category === 'studio_monitor') {
+    const isMidfield = subcategory === 'midfield_3way';
+    const maxAllowedSize = isMidfield ? 10 : 8;
+
+    if (size < 4) {
+      status = 'incompatible';
+      reasons.push(`Transducer size (${size}") is under-sized for studio woofer duty (< 4").`);
+    } else if (size > maxAllowedSize) {
+      status = 'incompatible';
+      reasons.push(
+        `Transducer diameter (${size}") exceeds recommended limit for ${
+          isMidfield ? 'Midfield 3-Way' : 'Studio Monitor'
+        } (${maxAllowedSize}").`
+      );
+    }
+
+    if (sens > 94) {
+      status = 'incompatible';
+      reasons.push(
+        `High-efficiency PA transducer (${sens} dB @ 1W/1m) causes severe frequency response & balance mismatch for studio reference monitoring.`
+      );
+    } else if (sens > 91.5) {
+      if (status !== 'incompatible') status = 'suboptimal';
+      reasons.push(`Sensitivity (${sens} dB) is higher than standard hi-fi studio monitors (84–90 dB).`);
+    } else if (sens < 82) {
+      if (status !== 'incompatible') status = 'suboptimal';
+      reasons.push(`Sensitivity (${sens} dB) is exceptionally low, requiring excessive amplifier drive.`);
+    }
+
+    if (fs > 55) {
+      status = 'incompatible';
+      reasons.push(`Resonant frequency Fs (${fs} Hz) is too high for full-range studio bass monitoring.`);
+    } else if (fs > 45 && !isMidfield) {
+      if (status !== 'incompatible') status = 'suboptimal';
+      reasons.push(`Fs (${fs} Hz) limits low-frequency extension in nearfield reference monitoring.`);
+    }
+
+    if (pe >= 600 && vcMm >= 100) {
+      if (status !== 'incompatible') status = 'suboptimal';
+      reasons.push(`Heavy 4" voice coil PA driver (${pe}W) has high moving mass (Mms) for studio nearfield precision.`);
+    }
+
+  } else if (category === 'studio_sub') {
+    const isLfe = subcategory === 'lfe_channel';
+    const minSize = 8;
+    const maxSize = isLfe ? 18 : 15;
+
+    if (size < minSize) {
+      status = 'incompatible';
+      reasons.push(`Subwoofer driver size (${size}") is under-sized for true studio sub-bass (< 8").`);
+    } else if (size > maxSize) {
+      status = 'incompatible';
+      reasons.push(`Driver diameter (${size}") exceeds ${maxSize}" studio subwoofer boundary.`);
+    }
+
+    if (xmax < 7.0) {
+      status = 'incompatible';
+      reasons.push(`Linear excursion Xmax (${xmax}mm) is insufficient for sub-bass stroke (< 7mm short-throw risk).`);
+    } else if (xmax < 10.0) {
+      if (status !== 'incompatible') status = 'suboptimal';
+      reasons.push(`Xmax (${xmax}mm) is moderate; ≥ 10mm recommended for deep infrasonic headroom.`);
+    }
+
+    if (fs > 40) {
+      status = 'incompatible';
+      reasons.push(`Fs (${fs} Hz) is too high for dedicated studio subwoofer alignment (> 40 Hz).`);
+    } else if (fs > 32) {
+      if (status !== 'incompatible') status = 'suboptimal';
+      reasons.push(`Fs (${fs} Hz) is above optimal studio sub target (≤ 30 Hz).`);
+    }
+
+    if (sens >= 97 && xmax < 8.0) {
+      status = 'incompatible';
+      reasons.push(`High-efficiency PA mid-bass driver (${sens} dB, Xmax ${xmax}mm) lacks deep sub-bass displacement stroke.`);
+    }
+
+  } else if (category === 'live_top') {
+    if (size < 8 || size > 15) {
+      status = 'incompatible';
+      reasons.push(`Transducer diameter (${size}") is outside standard live PA top boundary (8" to 15").`);
+    }
+
+    if (sens < 90) {
+      status = 'incompatible';
+      reasons.push(`Low sensitivity (${sens} dB @ 1W/1m) is inadequate for live reinforcement (< 90 dB hi-fi driver).`);
+    } else if (sens < 94) {
+      if (status !== 'incompatible') status = 'suboptimal';
+      reasons.push(`Sensitivity (${sens} dB) is below pro PA top benchmark (≥ 94 dB).`);
+    }
+
+    if (pe < 200) {
+      status = 'incompatible';
+      reasons.push(`Continuous thermal power handling (${pe}W RMS) is too low for live sound loads (< 200W).`);
+    } else if (pe < 300) {
+      if (status !== 'incompatible') status = 'suboptimal';
+      reasons.push(`Power capacity (${pe}W) is light for high-SPL concert stage duty.`);
+    }
+
+    if (qts > 0.50) {
+      if (status !== 'incompatible') status = 'suboptimal';
+      reasons.push(`Qts (${qts}) is high for vented PA top enclosures; target 0.22 – 0.40 for controlled bass-mid transients.`);
+    }
+
+  } else if (category === 'live_sub') {
+    if (size < 12 || size > 21) {
+      status = 'incompatible';
+      reasons.push(`Transducer size (${size}") is outside touring concert subwoofer range (12" to 21").`);
+    }
+
+    if (vcMm < 65) {
+      status = 'incompatible';
+      reasons.push(`Voice coil diameter (${vcMm}mm / ${(vcMm/25.4).toFixed(1)}") is too small for touring sub thermal loads (< 3").`);
+    } else if (vcMm < 76) {
+      if (status !== 'incompatible') status = 'suboptimal';
+      reasons.push(`Voice coil (${vcMm}mm) is smaller than heavy 100mm (4") tour subwoofer standard.`);
+    }
+
+    if (pe < 400) {
+      status = 'incompatible';
+      reasons.push(`Continuous power handling (${pe}W AES) is insufficient for concert sub-bass (< 400W).`);
+    } else if (pe < 600) {
+      if (status !== 'incompatible') status = 'suboptimal';
+      reasons.push(`Power handling (${pe}W) is moderate compared to 800W–1600W touring sub standards.`);
+    }
+
+    if (sens < 92) {
+      status = 'incompatible';
+      reasons.push(`Acoustic sensitivity (${sens} dB) is too low for high-impact concert subwoofer arrays.`);
+    } else if (sens < 95) {
+      if (status !== 'incompatible') status = 'suboptimal';
+      reasons.push(`Sensitivity (${sens} dB) is slightly lower than flagship 96+ dB tour subwoofers.`);
+    }
+
+    if (xmax < 6.5) {
+      status = 'incompatible';
+      reasons.push(`Linear excursion Xmax (${xmax}mm) is too short for high-SPL concert bass stroke.`);
+    } else if (xmax < 8.5) {
+      if (status !== 'incompatible') status = 'suboptimal';
+      reasons.push(`Xmax (${xmax}mm) is moderate for extreme concert sub excursion.`);
+    }
+  }
+
+  // Populate positive summary if optimal
+  if (status === 'optimal') {
+    if (recIds.length > 0 && recIds.includes(driver.id)) {
+      reasons.push(`Flagship recommended driver match for ${subConfig?.name || catSpec.name}.`);
+    } else {
+      reasons.push(`Transducer fully satisfies all ${catSpec.name} electroacoustic qualification criteria.`);
+    }
+  }
+
+  return {
+    status,
+    reasons,
+    recommendedAlternatives,
+  };
+}
+
+/**
+ * Real-Time Physics Max SPL & Electroacoustic Bottleneck Engine
+ * Computes thermal power limited Max SPL vs cone displacement Xmax limited Max SPL at bass cutoff (F3),
+ * factoring driver count, sensitivity, distance, boundary space loading, and archetype target benchmarks.
+ */
+export function calculateMaxSplReport(
+  acousticParams: AcousticParameters,
+  wooferSingle: DriverPreset,
+  wooferQuantity: number,
+  activeCategory: SpeakerCategory,
+  f3CutoffHz: number,
+  alignment: AlignmentType,
+  klippelThermal: KlippelThermalReport
+): MaxSplCalculationReport {
+  const targetDistanceM = acousticParams.splCalcDistanceM ?? 1.0;
+  const maxContinuousPowerW = Math.round(wooferSingle.pe * wooferQuantity);
+  const inputPowerWatts = acousticParams.splCalcInputPowerW ?? maxContinuousPowerW;
+  const maxPeakPowerW = maxContinuousPowerW * 4;
+
+  const boundarySpace = acousticParams.splCalcBoundarySpace ?? (
+    activeCategory === 'live_sub' || activeCategory === 'studio_sub'
+      ? 'half_space_2pi'
+      : 'free_space_4pi'
+  );
+
+  let boundaryGainDb = 0;
+  if (boundarySpace === 'half_space_2pi') {
+    boundaryGainDb = 6.0;
+  } else if (boundarySpace === 'corner_bound_1pi') {
+    boundaryGainDb = 12.0;
+  }
+
+  // Voltage / Power Sensitivity in dB SPL @ 1W/1m
+  const systemSensitivity1w1mMm = wooferSingle.splSensitivityDb + (wooferQuantity > 1 ? 3.0 : 0.0);
+
+  // Power compression loss (dB) from thermal model
+  const powerCompressionLossDb = klippelThermal.powerCompressionDb;
+
+  // Thermal limited Max SPL at 1m
+  const safeInputPowerW = Math.max(1, inputPowerWatts);
+  const thermalMaxSplAt1m = Math.round(
+    (systemSensitivity1w1mMm + 10 * Math.log10(safeInputPowerW) - powerCompressionLossDb) * 10
+  ) / 10;
+
+  // Cone displacement / excursion limited Max SPL at 1m at bass cutoff (F3)
+  const totalSdM2 = wooferSingle.sd * wooferQuantity * 1e-4; // m^2
+  const xmaxM = wooferSingle.xmax * 1e-3; // m
+  const vdM3 = totalSdM2 * xmaxM; // m^3
+  const displacementLimitedFreqHz = Math.round(Math.max(20, f3CutoffHz));
+
+  // Closed-form Keele / Small displacement SPL formula at 1m:
+  // SPL_disp_sealed(1m) = 112 + 20 * log10(f^2 * Vd)
+  const sealedDispSplAt1m = 112 + 20 * Math.log10(Math.max(1e-6, Math.pow(displacementLimitedFreqHz, 2) * vdM3));
+  // Bass reflex or bandpass port resonance provides port resonance excursion attenuation (+9.5dB boost at Fb)
+  const portBoostDb = alignment !== 'sealed' ? 9.5 : 0.0;
+  const displacementMaxSplAt1m = Math.round((sealedDispSplAt1m + portBoostDb) * 10) / 10;
+
+  // Distance inverse-square loss
+  const distanceLossDb = Math.round(20 * Math.log10(Math.max(0.1, targetDistanceM)) * 10) / 10;
+
+  // Determine limiting factor
+  let limitingFactor: 'thermal_power' | 'excursion_displacement' | 'port_chuffing' = 'thermal_power';
+  let limitingFactorDescription = '';
+
+  if (displacementMaxSplAt1m < thermalMaxSplAt1m - 1.0) {
+    limitingFactor = 'excursion_displacement';
+    limitingFactorDescription = `Cone displacement limit (Xmax = ${wooferSingle.xmax}mm) restricts peak bass output at ${displacementLimitedFreqHz}Hz before thermal power capacity is reached.`;
+  } else if (thermalMaxSplAt1m < displacementMaxSplAt1m - 1.0) {
+    limitingFactor = 'thermal_power';
+    limitingFactorDescription = `Voice coil thermal power handling (${maxContinuousPowerW}W RMS) and ${powerCompressionLossDb}dB power compression limit maximum output.`;
+  } else {
+    limitingFactor = 'thermal_power';
+    limitingFactorDescription = `Balanced electroacoustic state: Thermal power handling and mechanical cone stroke capability are closely matched.`;
+  }
+
+  // Effective output at distance & boundary
+  const maxSplAt1m = Math.min(thermalMaxSplAt1m, displacementMaxSplAt1m);
+  const effectiveContinuousSplDb = Math.round((maxSplAt1m + boundaryGainDb - distanceLossDb) * 10) / 10;
+  const effectivePeakSplDb = Math.round((effectiveContinuousSplDb + 6.0) * 10) / 10; // +6dB dynamic peak crest factor
+
+  // Archetype Target Benchmarks
+  let archetypeTargetSplDb = 105.0; // studio_monitor: 105 dB Peak @ 2.0m
+  if (activeCategory === 'studio_monitor') {
+    archetypeTargetSplDb = 105.0;
+  } else if (activeCategory === 'studio_sub') {
+    archetypeTargetSplDb = 115.0;
+  } else if (activeCategory === 'live_top') {
+    archetypeTargetSplDb = 132.0;
+  } else if (activeCategory === 'live_sub') {
+    archetypeTargetSplDb = 140.0;
+  }
+
+  const archetypeHeadroomDb = Math.round((effectivePeakSplDb - archetypeTargetSplDb) * 10) / 10;
+
+  let archetypeStatus: 'optimal_headroom' | 'adequate' | 'underpowered' = 'adequate';
+  let archetypeRecommendation = '';
+
+  if (archetypeHeadroomDb >= 3.0) {
+    archetypeStatus = 'optimal_headroom';
+    archetypeRecommendation = `Exceeds ${CATEGORY_SPECS[activeCategory].name} target benchmark by +${archetypeHeadroomDb}dB. Provides pristine dynamic headroom for uncompressed peak transients.`;
+  } else if (archetypeHeadroomDb >= 0.0) {
+    archetypeStatus = 'adequate';
+    archetypeRecommendation = `Meets ${CATEGORY_SPECS[activeCategory].name} target SPL requirement (${archetypeTargetSplDb} dB Peak) with +${archetypeHeadroomDb}dB margin.`;
+  } else {
+    archetypeStatus = 'underpowered';
+    archetypeRecommendation = `Output is ${Math.abs(archetypeHeadroomDb)}dB below recommended ${CATEGORY_SPECS[activeCategory].name} benchmark (${archetypeTargetSplDb} dB Peak). Consider higher sensitivity drivers or additional power.`;
+  }
+
+  return {
+    systemSensitivity1w1mMm: Math.round(systemSensitivity1w1mMm * 10) / 10,
+    inputPowerWatts,
+    maxContinuousPowerW,
+    maxPeakPowerW,
+    thermalMaxSplAt1m,
+    displacementMaxSplAt1m,
+    displacementLimitedFreqHz,
+    limitingFactor,
+    limitingFactorDescription,
+    boundarySpace,
+    boundaryGainDb,
+    targetDistanceM,
+    distanceLossDb,
+    effectiveContinuousSplDb,
+    effectivePeakSplDb,
+    powerCompressionLossDb,
+    archetypeTargetSplDb,
+    archetypeHeadroomDb,
+    archetypeStatus,
+    archetypeRecommendation,
   };
 }
 
@@ -1555,20 +2189,34 @@ function calculateEnclosureMechanics(
   bracingLevel: 'minimal' | 'standard' | 'heavy',
   materialType: MaterialType,
   hasCLD = false,
-  absorptionType = 'recycled_denim'
+  absorptionType = 'recycled_denim',
+  materialPricing?: MaterialPricingConfig
 ): EnclosureMechanicsReport {
   const spec = MATERIAL_SPECS[materialType] || MATERIAL_SPECS.baltic_birch_18;
   const isFilament = spec.category === 'filaments';
   const infill = dimensions.infillPercent ?? 40;
-  const rhoSolid = spec.densityKgM3;
-  const effectiveDensityKgM3 = isFilament ? Math.round(rhoSolid * (0.35 + 0.65 * (infill / 100))) : rhoSolid;
+  const rhoSolid = materialPricing?.customDensityKgM3 ?? spec.densityKgM3;
+  const effectiveDensityKgM3 = isFilament
+    ? Math.round(rhoSolid * (0.35 + 0.65 * (infill / 100)))
+    : Math.round(rhoSolid);
 
   const isPlywood = materialType.includes('birch') || materialType.includes('marine');
-  const isMDF = materialType.includes('mdf');
-  const flexuralModulusGpa = spec.flexuralModulusGpa || (isPlywood ? 8.5 : isMDF ? 3.4 : 12.5);
+  const isMDF = materialType.includes('mdf') || materialType.includes('valchromat');
+  const flexuralModulusGpa =
+    materialPricing?.customFlexuralModulusGpa ??
+    spec.flexuralModulusGpa ??
+    (isPlywood ? 8.5 : isMDF ? 3.8 : 12.5);
   const youngsModulusPa = flexuralModulusGpa * 1e9; // Pa
-  const nu = isFilament ? 0.35 : 0.3; // Poisson's ratio (~0.35 for thermoplastics, ~0.3 for wood)
-  const hM = (dimensions.baffleThicknessMm || 18) * 1e-3;
+  const nu =
+    materialPricing?.customPoissonRatio ??
+    spec.poissonRatio ??
+    (isFilament ? 0.35 : 0.30); // Poisson's ratio
+  const hM = (dimensions.baffleThicknessMm || spec.nominalThicknessMm || 18) * 1e-3;
+
+  // Longitudinal acoustic wave speed in panel material: c_L = sqrt(E / [rho * (1 - nu^2)])
+  const longitudinalWaveSpeedMs = Math.round(
+    Math.sqrt(youngsModulusPa / Math.max(100, effectiveDensityKgM3 * (1 - nu * nu)))
+  );
 
   // Plate bending stiffness: D_bend = E * h^3 / [12 * (1 - nu^2)]
   const bendingStiffnessNm = Math.round((youngsModulusPa * Math.pow(hM, 3)) / (12 * (1 - nu * nu)));
@@ -1577,7 +2225,7 @@ function calculateEnclosureMechanics(
   const aM = dimensions.externalHeightMm * 1e-3;
   const bM = dimensions.externalWidthMm * 1e-3;
   const plateConst = (Math.PI * hM) / (4 * Math.sqrt(3 * (1 - nu * nu)));
-  const f11Raw = plateConst * (1 / (aM * aM) + 1 / (bM * bM)) * Math.sqrt(youngsModulusPa / effectiveDensityKgM3);
+  const f11Raw = plateConst * (1 / (aM * aM) + 1 / (bM * bM)) * Math.sqrt(youngsModulusPa / Math.max(100, effectiveDensityKgM3));
   const fundamentalPanelModeHz = Math.round(f11Raw);
 
   // Baltic Birch 18mm Reference fundamental mode (E = 12.5 GPa, rho = 680 kg/m³)
@@ -1587,7 +2235,7 @@ function calculateEnclosureMechanics(
   // Matrix bracing grid shifts unbraced spans down to 100-150mm
   const targetSpanMm = bracingLevel === 'heavy' ? 110 : bracingLevel === 'standard' ? 135 : 180;
   const bracedSpanM = targetSpanMm * 1e-3;
-  const bracedF11 = plateConst * (2 / (bracedSpanM * bracedSpanM)) * Math.sqrt(youngsModulusPa / effectiveDensityKgM3);
+  const bracedF11 = plateConst * (2 / (bracedSpanM * bracedSpanM)) * Math.sqrt(youngsModulusPa / Math.max(100, effectiveDensityKgM3));
   const bracedPanelModeHz = Math.round(bracedF11);
 
   // Diagnostic warning for thin 3D printed panel walls
@@ -1607,11 +2255,15 @@ function calculateEnclosureMechanics(
   const spoolCount = isFilament ? Math.ceil(Math.max(1, filamentMassKg)) : undefined;
   const spoolCostUsd = isFilament ? Math.round(spoolCount! * (spec.costPerKgUsd || 30) * 100) / 100 : undefined;
 
-  // CLD system loss factor
-  const cldLossFactor = hasCLD ? 0.32 : isFilament ? spec.dampingFactor : isMDF ? 0.028 : 0.016;
+  // Base material damping loss factor eta + CLD system loss factor
+  const baseDampingLossFactor = materialPricing?.customDampingFactor ?? spec.dampingFactor ?? (isMDF ? 0.035 : 0.022);
+  const cldLossFactor = hasCLD
+    ? Math.round(Math.min(0.45, baseDampingLossFactor + 0.28) * 1000) / 1000
+    : Math.round(baseDampingLossFactor * 1000) / 1000;
 
   // Rigging certified WLL (DGUV Vorschrift 17 / BGV C1 10:1 vs ANSI E1.8 7:1)
-  const ultimateBreakingLoadKg = isFilament ? 500 : 850;
+  const isCarbonComposite = materialType.includes('carbon_fiber');
+  const ultimateBreakingLoadKg = isCarbonComposite ? 1250 : isFilament ? 500 : 850;
   const wllDguv10to1Kg = Math.round(ultimateBreakingLoadKg / 10);
   const wllAnsi7to1Kg = Math.round(ultimateBreakingLoadKg / 7);
 
@@ -1636,7 +2288,7 @@ function calculateEnclosureMechanics(
   const rawPanelModeHz = bracedPanelModeHz;
   const finishPanelModeHz = Math.round(rawPanelModeHz * Math.sqrt(substrateArealMass / (substrateArealMass + finishSpec.addedDensityKgM2)));
   const compositeLossFactor = Math.round((cldLossFactor + finishSpec.lossFactor) * 1000) / 1000;
-  const panelRingingAttenuationDb = Math.round((20 * Math.log10(rawPanelModeHz / Math.max(1, finishPanelModeHz)) + 10 * Math.log10(1 + finishSpec.lossFactor / Math.max(0.001, cldLossFactor))) * 10) / 10;
+  const panelRingingAttenuationDb = Math.round((20 * Math.log10(rawPanelModeHz / Math.max(1, finishPanelModeHz)) + 10 * Math.log10(1 + (cldLossFactor + finishSpec.lossFactor) / 0.016)) * 10) / 10;
 
   return {
     bendingStiffnessNm,
@@ -1659,6 +2311,9 @@ function calculateEnclosureMechanics(
     isFilamentMaterial: isFilament,
     effectiveDensityKgM3,
     flexuralModulusGpa,
+    poissonRatio: nu,
+    dampingLossFactor: baseDampingLossFactor,
+    longitudinalWaveSpeedMs,
     spoolCount,
     spoolCostUsd,
     wallComplianceWarning,

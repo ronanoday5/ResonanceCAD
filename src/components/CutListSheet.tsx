@@ -1,16 +1,31 @@
 import React, { useState } from 'react';
 import { CutListItem, EnclosureDimensions } from '../types/loudspeaker.ts';
 import { exportCutListToCSV } from '../services/cutlistGenerator.ts';
-import { Download, FileText, Printer, Ruler } from 'lucide-react';
+import { Download, FileText, Printer, Ruler, Eye, Compass, Layers, CheckCircle2, Info } from 'lucide-react';
+import { useUnits } from '../context/UnitContext.tsx';
 
 interface CutListSheetProps {
   cutList: CutListItem[];
   dimensions: EnclosureDimensions;
+  selectedPartId?: string | null;
   onSelectPart: (partId: string) => void;
+  onHoverPart?: (partId: string | null) => void;
+  onInspectPartSpecs?: (partId: string) => void;
 }
 
-export const CutListSheet: React.FC<CutListSheetProps> = ({ cutList, dimensions, onSelectPart }) => {
-  const [unit, setUnit] = useState<'mm' | 'inch'>('mm');
+type SpatialFilterCategory = 'all' | 'baffle' | 'exterior_walls' | 'braces' | 'ports_internal';
+
+export const CutListSheet: React.FC<CutListSheetProps> = ({
+  cutList,
+  dimensions,
+  selectedPartId,
+  onSelectPart,
+  onHoverPart,
+  onInspectPartSpecs,
+}) => {
+  const { unitSystem, setUnitSystem, formatLength } = useUnits();
+  const [activeFilter, setActiveFilter] = useState<SpatialFilterCategory>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
 
   const totalParts = cutList.reduce((acc, p) => acc + p.quantity, 0);
   const totalWeight = cutList.reduce((acc, p) => acc + p.weightKg, 0);
@@ -25,13 +40,65 @@ export const CutListSheet: React.FC<CutListSheetProps> = ({ cutList, dimensions,
   const standardSheetAreaM2 = 1.525 * 1.525;
   const sheetYieldFraction = (totalAreaM2 / standardSheetAreaM2) * 100;
 
+  // Category classifier for quick filtering
+  const getFilterCategory = (item: CutListItem): SpatialFilterCategory => {
+    if (item.type === 'baffle') return 'baffle';
+    if (item.type === 'top' || item.type === 'bottom' || item.type === 'left_side' || item.type === 'right_side' || item.type === 'rear') {
+      return 'exterior_walls';
+    }
+    if (item.type === 'window_brace' || item.type === 'shelf_brace' || item.type === 'cleat') {
+      return 'braces';
+    }
+    return 'ports_internal';
+  };
+
+  const getSpatialBadgeColor = (item: CutListItem) => {
+    if (item.type === 'baffle') {
+      return 'bg-cyan-950/80 text-cyan-300 border-cyan-500/60 shadow-cyan-950/40';
+    }
+    if (item.type === 'top' || item.type === 'bottom') {
+      return 'bg-sky-950/80 text-sky-300 border-sky-500/60 shadow-sky-950/40';
+    }
+    if (item.type === 'left_side' || item.type === 'right_side') {
+      return 'bg-blue-950/80 text-blue-300 border-blue-500/60 shadow-blue-950/40';
+    }
+    if (item.type === 'rear') {
+      return 'bg-indigo-950/80 text-indigo-300 border-indigo-500/60 shadow-indigo-950/40';
+    }
+    if (item.type === 'window_brace' || item.type === 'shelf_brace') {
+      return 'bg-emerald-950/80 text-emerald-300 border-emerald-500/60 shadow-emerald-950/40';
+    }
+    if (item.type === 'port_board' || item.type === 'midrange_chamber') {
+      return 'bg-purple-950/80 text-purple-300 border-purple-500/60 shadow-purple-950/40';
+    }
+    return 'bg-amber-950/80 text-amber-300 border-amber-500/60 shadow-amber-950/40';
+  };
+
+  const filteredCutList = cutList.filter((item) => {
+    if (activeFilter !== 'all' && getFilterCategory(item) !== activeFilter) {
+      return false;
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const matchLabel = item.spatialLabel.toLowerCase().includes(q);
+      const matchLoc = item.spatialLocation.toLowerCase().includes(q);
+      const matchName = item.name.toLowerCase().includes(q);
+      const matchNotes = item.cutNotes.toLowerCase().includes(q);
+      return matchLabel || matchLoc || matchName || matchNotes;
+    }
+    return true;
+  });
+
   const handleExportCSV = () => {
     const csvContent = exportCutListToCSV(cutList, dimensions);
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `ResonanceCAD_CutList_${dimensions.externalWidthMm}x${dimensions.externalHeightMm}x${dimensions.externalDepthMm}.csv`);
+    link.setAttribute(
+      'download',
+      `ResonanceCAD_CutList_${dimensions.externalWidthMm}x${dimensions.externalHeightMm}x${dimensions.externalDepthMm}.csv`
+    );
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -55,46 +122,55 @@ export const CutListSheet: React.FC<CutListSheetProps> = ({ cutList, dimensions,
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `ResonanceCAD_CAD_Spec_${dimensions.externalWidthMm}x${dimensions.externalHeightMm}.json`);
+    link.setAttribute(
+      'download',
+      `ResonanceCAD_CAD_Spec_${dimensions.externalWidthMm}x${dimensions.externalHeightMm}.json`
+    );
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
 
-  const formatDim = (valMm: number) => {
-    if (unit === 'mm') return `${valMm} mm`;
-    return `${(valMm / 25.4).toFixed(3)}"`;
-  };
-
   return (
-    <div className="bg-slate-950 border border-slate-800 rounded-lg p-5 font-sans text-slate-200">
+    <div className="bg-slate-950 border border-slate-800 rounded-xl p-5 font-sans text-slate-200 shadow-2xl">
       {/* Top Header & Actions */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 mb-4 border-b border-slate-800 gap-3">
         <div>
           <div className="flex items-center gap-2">
             <Ruler className="w-5 h-5 text-cyan-400" />
             <h3 className="font-semibold text-sm text-slate-100 uppercase tracking-wider font-mono">
-              Workshop Panel Cut List & Machining Sheet
+              Workshop Cut List &amp; Spatial Panel Schedule
             </h3>
+            <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-cyan-950 text-cyan-300 border border-cyan-800/80">
+              Auto-Labeled 3D
+            </span>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Exact physical dimensions accounting for joints, kerf allowances, and router rebates.
+            Automated spatial numbering (e.g., <code className="text-cyan-300 font-mono">Baffle-01</code>, <code className="text-sky-300 font-mono">Side-Left-01</code>, <code className="text-emerald-300 font-mono">Brace-Inner-02</code>) dynamically synced with 3D CAD mesh highlights.
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {/* Unit Switcher */}
-          <div className="flex items-center bg-slate-900 border border-slate-700/80 rounded p-0.5 text-xs font-mono">
+          <div className="flex items-center bg-slate-900 border border-slate-700/80 rounded-lg p-0.5 text-xs font-mono">
             <button
-              onClick={() => setUnit('mm')}
-              className={`px-2.5 py-1 rounded transition ${unit === 'mm' ? 'bg-cyan-600 text-white font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+              onClick={() => setUnitSystem('metric')}
+              className={`px-2.5 py-1 rounded transition cursor-pointer ${
+                unitSystem === 'metric'
+                  ? 'bg-cyan-600 text-white font-semibold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
             >
               METRIC (MM)
             </button>
             <button
-              onClick={() => setUnit('inch')}
-              className={`px-2.5 py-1 rounded transition ${unit === 'inch' ? 'bg-cyan-600 text-white font-semibold' : 'text-slate-400 hover:text-slate-200'}`}
+              onClick={() => setUnitSystem('imperial')}
+              className={`px-2.5 py-1 rounded transition cursor-pointer ${
+                unitSystem === 'imperial'
+                  ? 'bg-cyan-600 text-white font-semibold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
             >
               IMPERIAL (IN)
             </button>
@@ -102,15 +178,17 @@ export const CutListSheet: React.FC<CutListSheetProps> = ({ cutList, dimensions,
 
           <button
             onClick={handleExportCSV}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 transition"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 transition cursor-pointer"
+            title="Export CSV with Spatial Labels"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>CSV</span>
+            <span>CSV Schedule</span>
           </button>
 
           <button
             onClick={handleExportJSON}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition cursor-pointer"
+            title="Export Full JSON CAD Specification"
           >
             <FileText className="w-3.5 h-3.5" />
             <span>JSON</span>
@@ -118,7 +196,8 @@ export const CutListSheet: React.FC<CutListSheetProps> = ({ cutList, dimensions,
 
           <button
             onClick={() => window.print()}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition cursor-pointer"
+            title="Print Cut List"
           >
             <Printer className="w-3.5 h-3.5" />
             <span>Print</span>
@@ -128,70 +207,263 @@ export const CutListSheet: React.FC<CutListSheetProps> = ({ cutList, dimensions,
 
       {/* Workshop Summary Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-        <div className="bg-slate-900/80 border border-slate-800 p-3 rounded">
-          <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">Total Parts</span>
+        <div className="bg-slate-900/80 border border-slate-800 p-3 rounded-lg">
+          <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">Total Panels &amp; Parts</span>
           <span className="text-lg font-bold font-mono text-slate-100">{totalParts} panels</span>
-          <span className="text-[10px] text-slate-500 font-mono block mt-0.5">{cutList.length} unique shapes</span>
+          <span className="text-[10px] text-cyan-400 font-mono block mt-0.5">
+            {cutList.length} distinct spatial parts
+          </span>
         </div>
 
-        <div className="bg-slate-900/80 border border-slate-800 p-3 rounded">
+        <div className="bg-slate-900/80 border border-slate-800 p-3 rounded-lg">
           <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">Raw Board Area</span>
           <span className="text-lg font-bold font-mono text-cyan-300">{totalAreaM2.toFixed(2)} m²</span>
-          <span className="text-[10px] text-slate-500 font-mono block mt-0.5">{totalAreaSqFt.toFixed(1)} sq.ft</span>
+          <span className="text-[10px] text-slate-400 font-mono block mt-0.5">{totalAreaSqFt.toFixed(1)} sq.ft</span>
         </div>
 
-        <div className="bg-slate-900/80 border border-slate-800 p-3 rounded">
-          <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">Sheet Yield (5x5 ft)</span>
+        <div className="bg-slate-900/80 border border-slate-800 p-3 rounded-lg">
+          <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">Sheet Yield (5×5 ft)</span>
           <span className="text-lg font-bold font-mono text-amber-300">{sheetYieldFraction.toFixed(0)}%</span>
-          <span className="text-[10px] text-slate-500 font-mono block mt-0.5">
+          <span className="text-[10px] text-slate-400 font-mono block mt-0.5">
             {sheetYieldFraction <= 100 ? 'Fits on 1 standard sheet' : 'Requires 2+ sheets'}
           </span>
         </div>
 
-        <div className="bg-slate-900/80 border border-slate-800 p-3 rounded">
-          <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">Est. Panel Mass</span>
+        <div className="bg-slate-900/80 border border-slate-800 p-3 rounded-lg">
+          <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">Est. Raw Panel Mass</span>
           <span className="text-lg font-bold font-mono text-emerald-300">{totalWeight.toFixed(1)} kg</span>
-          <span className="text-[10px] text-slate-500 font-mono block mt-0.5">{(totalWeight * 2.20462).toFixed(1)} lbs dry</span>
+          <span className="text-[10px] text-slate-400 font-mono block mt-0.5">
+            {(totalWeight * 2.20462).toFixed(1)} lbs dry
+          </span>
         </div>
       </div>
 
-      {/* Detailed Cut Table */}
-      <div className="overflow-x-auto border border-slate-800 rounded">
+      {/* Spatial Category Filter Chips & Search Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3 bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/80">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[11px] font-mono text-slate-400 flex items-center gap-1 mr-1">
+            <Compass className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Filter:</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setActiveFilter('all')}
+            className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer ${
+              activeFilter === 'all'
+                ? 'bg-cyan-900/80 text-cyan-200 border border-cyan-500/70 shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 bg-slate-800/60'
+            }`}
+          >
+            All Parts ({cutList.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveFilter('baffle')}
+            className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer ${
+              activeFilter === 'baffle'
+                ? 'bg-cyan-950 text-cyan-300 border border-cyan-500/70'
+                : 'text-slate-400 hover:text-slate-200 bg-slate-800/60'
+            }`}
+          >
+            Baffle ({cutList.filter((i) => getFilterCategory(i) === 'baffle').length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveFilter('exterior_walls')}
+            className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer ${
+              activeFilter === 'exterior_walls'
+                ? 'bg-sky-950 text-sky-300 border border-sky-500/70'
+                : 'text-slate-400 hover:text-slate-200 bg-slate-800/60'
+            }`}
+          >
+            Exterior Walls ({cutList.filter((i) => getFilterCategory(i) === 'exterior_walls').length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveFilter('braces')}
+            className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer ${
+              activeFilter === 'braces'
+                ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/70'
+                : 'text-slate-400 hover:text-slate-200 bg-slate-800/60'
+            }`}
+          >
+            Bracing ({cutList.filter((i) => getFilterCategory(i) === 'braces').length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveFilter('ports_internal')}
+            className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition cursor-pointer ${
+              activeFilter === 'ports_internal'
+                ? 'bg-purple-950 text-purple-300 border border-purple-500/70'
+                : 'text-slate-400 hover:text-slate-200 bg-slate-800/60'
+            }`}
+          >
+            Ports &amp; Interior ({cutList.filter((i) => getFilterCategory(i) === 'ports_internal').length})
+          </button>
+        </div>
+
+        <div className="relative">
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search spatial ID or part..."
+            className="w-full sm:w-56 px-3 py-1 bg-slate-950 border border-slate-700/80 rounded text-xs text-slate-200 placeholder-slate-500 font-mono focus:outline-none focus:border-cyan-500"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2 top-1.5 text-xs text-slate-400 hover:text-white"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Detailed Cut Table with Spatial Identifier & 3D Sync */}
+      <div className="overflow-x-auto border border-slate-800 rounded-lg">
         <table className="w-full text-left text-xs font-mono">
-          <thead className="bg-slate-900 text-slate-400 uppercase text-[10px] tracking-wider border-b border-slate-800">
+          <thead className="bg-slate-900/90 text-slate-400 uppercase text-[10px] tracking-wider border-b border-slate-800">
             <tr>
-              <th className="py-2.5 px-3">Component</th>
+              <th className="py-2.5 px-3">Spatial ID</th>
+              <th className="py-2.5 px-3">Component &amp; Role</th>
               <th className="py-2.5 px-2 text-center">Qty</th>
               <th className="py-2.5 px-3 text-right">Width (X)</th>
               <th className="py-2.5 px-3 text-right">Length (Y)</th>
               <th className="py-2.5 px-3 text-right">Thick (Z)</th>
               <th className="py-2.5 px-3">Machining / Joinery Specification</th>
               <th className="py-2.5 px-2 text-right">Mass</th>
+              <th className="py-2.5 px-3 text-center">3D CAD Sync</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/60 bg-slate-950/60 text-slate-300">
-            {cutList.map((item) => (
-              <tr
-                key={item.id}
-                onClick={() => onSelectPart(item.id)}
-                className="hover:bg-slate-800/40 cursor-pointer transition group"
-              >
-                <td className="py-2.5 px-3 font-sans">
-                  <div className="font-medium text-slate-200 group-hover:text-cyan-300 transition flex items-center gap-1.5">
-                    <span>{item.name}</span>
-                  </div>
-                  <div className="text-[11px] text-slate-500 font-mono">{item.cutNotes}</div>
-                </td>
-                <td className="py-2.5 px-2 text-center font-bold text-slate-100">{item.quantity}</td>
-                <td className="py-2.5 px-3 text-right text-cyan-300 font-semibold">{formatDim(item.widthMm)}</td>
-                <td className="py-2.5 px-3 text-right text-cyan-300 font-semibold">{formatDim(item.lengthMm)}</td>
-                <td className="py-2.5 px-3 text-right text-slate-400">{formatDim(item.thicknessMm)}</td>
-                <td className="py-2.5 px-3 text-[11px] text-slate-400 max-w-xs">{item.machiningNotes}</td>
-                <td className="py-2.5 px-2 text-right text-slate-400">{item.weightKg} kg</td>
-              </tr>
-            ))}
+            {filteredCutList.map((item) => {
+              const isSelected = selectedPartId === item.id;
+              const badgeClass = getSpatialBadgeColor(item);
+
+              return (
+                <tr
+                  key={item.id}
+                  onMouseEnter={() => onHoverPart?.(item.id)}
+                  onMouseLeave={() => onHoverPart?.(null)}
+                  onClick={() => onSelectPart(item.id)}
+                  className={`transition group cursor-pointer ${
+                    isSelected
+                      ? 'bg-cyan-950/40 border-l-4 border-l-cyan-400'
+                      : 'hover:bg-slate-800/40'
+                  }`}
+                >
+                  {/* Spatial Identifier Badge */}
+                  <td className="py-2.5 px-3">
+                    <div className="flex flex-col items-start gap-1">
+                      <span
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-mono font-bold tracking-wide border shadow-sm ${badgeClass}`}
+                      >
+                        {item.spatialLabel}
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-mono truncate max-w-[130px]">
+                        {item.spatialLocation}
+                      </span>
+                    </div>
+                  </td>
+
+                  {/* Component Name & Cut Notes */}
+                  <td className="py-2.5 px-3 font-sans">
+                    <div className="font-medium text-slate-200 group-hover:text-cyan-300 transition flex items-center gap-1.5">
+                      <span>{item.name}</span>
+                      {isSelected && (
+                        <CheckCircle2 className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                      )}
+                    </div>
+                    <div className="text-[11px] text-slate-500 font-mono leading-relaxed mt-0.5">
+                      {item.cutNotes}
+                    </div>
+                  </td>
+
+                  {/* Quantity */}
+                  <td className="py-2.5 px-2 text-center font-bold text-slate-100">
+                    {item.quantity}
+                  </td>
+
+                  {/* Dimensions */}
+                  <td className="py-2.5 px-3 text-right text-cyan-300 font-semibold font-mono">
+                    {formatLength(item.widthMm)}
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-cyan-300 font-semibold font-mono">
+                    {formatLength(item.lengthMm)}
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-slate-400 font-mono">
+                    {formatLength(item.thicknessMm)}
+                  </td>
+
+                  {/* Machining / Joinery */}
+                  <td className="py-2.5 px-3 text-[11px] text-slate-400 max-w-xs font-sans leading-relaxed">
+                    {item.machiningNotes}
+                  </td>
+
+                  {/* Mass */}
+                  <td className="py-2.5 px-2 text-right text-slate-300 font-mono whitespace-nowrap">
+                    {item.weightKg} kg
+                  </td>
+
+                  {/* 3D CAD Action Buttons */}
+                  <td className="py-2.5 px-3 text-center">
+                    <div className="flex items-center justify-center gap-1">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectPart(item.id);
+                        }}
+                        className={`p-1.5 rounded transition cursor-pointer flex items-center gap-1 text-[10px] font-mono font-bold ${
+                          isSelected
+                            ? 'bg-cyan-500 text-slate-950 font-bold shadow-md shadow-cyan-500/20'
+                            : 'bg-slate-800 hover:bg-cyan-950 text-slate-300 hover:text-cyan-200 border border-slate-700 hover:border-cyan-600'
+                        }`}
+                        title={`Highlight [${item.spatialLabel}] in 3D CAD Viewport`}
+                      >
+                        <Eye className="w-3 h-3" />
+                        <span>3D Highlight</span>
+                      </button>
+
+                      {onInspectPartSpecs && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onInspectPartSpecs(item.id);
+                          }}
+                          className="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700 transition cursor-pointer"
+                          title="Inspect Detailed Engineering & Machining Specs"
+                        >
+                          <Info className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
+      </div>
+
+      {filteredCutList.length === 0 && (
+        <div className="text-center py-8 text-slate-500 font-mono text-xs">
+          No panels match the selected filter or search query.
+        </div>
+      )}
+
+      {/* Footer Info Notice */}
+      <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between text-[11px] font-mono text-slate-400 gap-2">
+        <div className="flex items-center gap-1.5">
+          <Layers className="w-4 h-4 text-cyan-400 shrink-0" />
+          <span>Clicking any panel highlights its physical 3D mesh and renders its dynamic spatial CAD label in the viewport.</span>
+        </div>
+        <div className="text-slate-500">
+          Showing {filteredCutList.length} of {cutList.length} total parts
+        </div>
       </div>
     </div>
   );

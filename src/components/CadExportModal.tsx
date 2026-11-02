@@ -5,6 +5,8 @@ import {
   CadExportOptions,
   CadExportScope,
   CadExportUnits,
+  MANUFACTURING_PROFILES,
+  ManufacturingProfileId,
   buildCadFilename,
   downloadBlob,
   generateObj,
@@ -20,9 +22,11 @@ import {
   Cpu,
   Download,
   FileCode,
+  Gauge,
   HardDrive,
   Layers,
   Printer,
+  Sliders,
   Sparkles,
   Wind,
   Wrench,
@@ -48,20 +52,51 @@ export const CadExportModal: React.FC<CadExportModalProps> = ({
   getModelRoot,
   initialScope = 'woodwork_only',
 }) => {
-  const [format, setFormat] = useState<CadExportFormat>('stl_binary');
+  // Determine initial manufacturing profile based on scope or material
+  const initialProfileId: ManufacturingProfileId = useMemo(() => {
+    if (initialScope === 'port_only' || dimensions.materialCategory === 'filaments') {
+      return '3d_print_fdm_04';
+    }
+    return 'cnc_router_5mm';
+  }, [initialScope, dimensions.materialCategory]);
+
+  const [selectedProfileId, setSelectedProfileId] = useState<ManufacturingProfileId>(initialProfileId);
+  const activeProfile = MANUFACTURING_PROFILES[selectedProfileId] || MANUFACTURING_PROFILES.cnc_router_5mm;
+
+  const [format, setFormat] = useState<CadExportFormat>(activeProfile.recommendedFormat);
   const [scope, setScope] = useState<CadExportScope>(initialScope);
+  const [units, setUnits] = useState<CadExportUnits>(activeProfile.recommendedUnits);
+  const [toleranceClearanceMm, setToleranceClearanceMm] = useState<number>(activeProfile.defaultToleranceMm);
 
   React.useEffect(() => {
     if (isOpen && initialScope) {
       setScope(initialScope);
+      if (initialScope === 'port_only') {
+        setSelectedProfileId('3d_print_fdm_04');
+        const p = MANUFACTURING_PROFILES['3d_print_fdm_04'];
+        setFormat(p.recommendedFormat);
+        setToleranceClearanceMm(p.defaultToleranceMm);
+      }
     }
   }, [isOpen, initialScope]);
-  const [units, setUnits] = useState<CadExportUnits>('mm');
+
   const [forceAssembled, setForceAssembled] = useState<boolean>(true);
   const [includeBracing, setIncludeBracing] = useState<boolean>(true);
   const [includePort, setIncludePort] = useState<boolean>(true);
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [exportSuccess, setExportSuccess] = useState<boolean>(false);
+
+  // Handle switching manufacturing profile
+  const handleSelectProfile = (profileId: ManufacturingProfileId) => {
+    setSelectedProfileId(profileId);
+    const prof = MANUFACTURING_PROFILES[profileId];
+    if (prof) {
+      setFormat(prof.recommendedFormat);
+      setScope(prof.recommendedScope);
+      setUnits(prof.recommendedUnits);
+      setToleranceClearanceMm(prof.defaultToleranceMm);
+    }
+  };
 
   // Inspect model geometry stats
   const previewStats = useMemo(() => {
@@ -74,6 +109,7 @@ export const CadExportModal: React.FC<CadExportModalProps> = ({
         driverCount: acoustics.topology === 'three_way' ? 3 : acoustics.topology === 'mtm' ? 3 : 2,
         totalTriangles: 1420,
         totalVertices: 4260,
+        appliedToleranceClearanceMm: toleranceClearanceMm,
       };
     }
     const { stats } = prepareExportScene(root, {
@@ -83,13 +119,30 @@ export const CadExportModal: React.FC<CadExportModalProps> = ({
       forceAssembled,
       includeBracing,
       includePort,
+      manufacturingProfile: selectedProfileId,
+      toleranceClearanceMm,
     });
-    return stats;
-  }, [getModelRoot, format, scope, units, forceAssembled, includeBracing, includePort, dimensions, acoustics]);
+    return {
+      ...stats,
+      appliedToleranceClearanceMm: toleranceClearanceMm,
+    };
+  }, [
+    getModelRoot,
+    format,
+    scope,
+    units,
+    forceAssembled,
+    includeBracing,
+    includePort,
+    dimensions,
+    acoustics,
+    selectedProfileId,
+    toleranceClearanceMm,
+  ]);
 
   const targetFilename = useMemo(() => {
-    return buildCadFilename(dimensions, acoustics, format, scope);
-  }, [dimensions, acoustics, format, scope]);
+    return buildCadFilename(dimensions, acoustics, format, scope, selectedProfileId);
+  }, [dimensions, acoustics, format, scope, selectedProfileId]);
 
   if (!isOpen) return null;
 
@@ -109,6 +162,8 @@ export const CadExportModal: React.FC<CadExportModalProps> = ({
           forceAssembled,
           includeBracing,
           includePort,
+          manufacturingProfile: selectedProfileId,
+          toleranceClearanceMm,
         };
 
         const { exportGroup } = prepareExportScene(root, options);
@@ -119,7 +174,7 @@ export const CadExportModal: React.FC<CadExportModalProps> = ({
         } else if (format === 'stl_ascii') {
           blob = generateStl(exportGroup, false);
         } else if (format === 'step') {
-          blob = generateStep(exportGroup, `ResonanceCAD_${scope}`);
+          blob = generateStep(exportGroup, `ResonanceCAD_${scope}_${selectedProfileId}`);
         } else {
           blob = generateObj(exportGroup);
         }
@@ -158,7 +213,7 @@ export const CadExportModal: React.FC<CadExportModalProps> = ({
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Generate 1:1 true-scale geometry for CNC router CAM, 3D printing slicers, and mechanical CAD
+                Pre-configured for CNC router tooling, 3D printing slicers, and mechanical joinery tolerances
               </p>
             </div>
           </div>
@@ -173,6 +228,120 @@ export const CadExportModal: React.FC<CadExportModalProps> = ({
 
         {/* Modal Scrollable Body */}
         <div className="p-5 overflow-y-auto space-y-4 text-xs">
+          {/* MANUFACTURING PROFILE SELECTOR (Core Pre-Config Engine) */}
+          <div className="bg-slate-950/90 border border-cyan-800/80 rounded-xl p-3.5 space-y-3 font-mono shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded bg-cyan-950 border border-cyan-700 text-cyan-400">
+                  <Gauge className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-100 flex items-center gap-2">
+                    <span>Manufacturing Profile Preset</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400 font-sans">
+                    Pre-configures formats, units, and mechanical clearance offsets (e.g. 5mm bit or 0.4mm nozzle)
+                  </p>
+                </div>
+              </div>
+              <span className="px-2.5 py-0.5 rounded text-[10px] font-bold uppercase bg-cyan-950 text-cyan-300 border border-cyan-700">
+                {activeProfile.badge}
+              </span>
+            </div>
+
+            {/* Profile Selection Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {(Object.keys(MANUFACTURING_PROFILES) as ManufacturingProfileId[]).map((profKey) => {
+                const prof = MANUFACTURING_PROFILES[profKey];
+                const isSelected = selectedProfileId === profKey;
+                return (
+                  <button
+                    key={profKey}
+                    onClick={() => handleSelectProfile(profKey)}
+                    className={`p-2.5 rounded-lg border text-left transition cursor-pointer flex flex-col justify-between ${
+                      isSelected
+                        ? 'bg-cyan-950/70 border-cyan-400 text-white font-bold shadow-sm'
+                        : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-semibold text-slate-200 line-clamp-1">{prof.name}</span>
+                        {isSelected && <Check className="w-3.5 h-3.5 text-cyan-400 shrink-0" />}
+                      </div>
+                      <span className="text-[10px] text-cyan-300 font-normal block mt-0.5">
+                        Tol: ±{prof.defaultToleranceMm}mm
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Active Profile Telemetry & Tolerance Offset Slider */}
+            <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-800 space-y-2.5 text-[11px]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-slate-300 font-bold flex items-center gap-1.5">
+                  <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Geometry Tolerance Clearance Offset:</span>
+                </span>
+                <span className="font-bold text-cyan-300 text-xs">
+                  ±{toleranceClearanceMm.toFixed(2)} mm
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min="0.00"
+                  max="0.50"
+                  step="0.05"
+                  value={toleranceClearanceMm}
+                  onChange={(e) => setToleranceClearanceMm(parseFloat(e.target.value))}
+                  className="w-full accent-cyan-400 cursor-pointer"
+                />
+                <button
+                  type="button"
+                  onClick={() => setToleranceClearanceMm(activeProfile.defaultToleranceMm)}
+                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] shrink-0"
+                >
+                  Reset ({activeProfile.defaultToleranceMm}mm)
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px] pt-1 border-t border-slate-800/80">
+                <div>
+                  <span className="text-slate-500 block uppercase">Tool/Nozzle:</span>
+                  <span className="text-amber-300 font-bold">
+                    {activeProfile.toolDiameterMm ? `Ø${activeProfile.toolDiameterMm} mm` : 'N/A'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block uppercase">Min Internal Radius:</span>
+                  <span className="text-cyan-300 font-bold">
+                    {activeProfile.minInternalRadiusMm > 0 ? `R${activeProfile.minInternalRadiusMm} mm` : '0 mm (Sharp)'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block uppercase">Dogbone Fillet:</span>
+                  <span className={activeProfile.dogboneCompensation ? 'text-emerald-400 font-bold' : 'text-slate-400'}>
+                    {activeProfile.dogboneCompensation ? 'Enabled (90°)' : 'Not Required'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block uppercase">Target Substrate:</span>
+                  <span className="text-slate-300 truncate block font-bold">
+                    {activeProfile.recommendedMaterials[0]}
+                  </span>
+                </div>
+              </div>
+
+              <p className="text-[10px] text-slate-400 font-sans italic pt-1 border-t border-slate-800/60">
+                {activeProfile.manufacturingNotes}
+              </p>
+            </div>
+          </div>
+
           {/* Envelope & Geometry Stats Card */}
           <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 space-y-2.5">
             <div className="flex items-center justify-between text-slate-400 text-[11px] font-mono">
@@ -200,9 +369,9 @@ export const CadExportModal: React.FC<CadExportModalProps> = ({
                 <span className="text-cyan-300 font-bold text-sm">{previewStats.totalTriangles.toLocaleString()}</span>
               </div>
               <div className="bg-slate-900/80 border border-slate-800/80 p-2 rounded-lg">
-                <span className="text-slate-500 text-[10px] block uppercase">Target Scale</span>
+                <span className="text-slate-500 text-[10px] block uppercase">Tolerance Fit</span>
                 <span className="text-emerald-300 font-bold text-sm">
-                  1:{units === 'mm' ? '1 mm' : units === 'inch' ? '1 in' : '1 m'}
+                  ±{previewStats.appliedToleranceClearanceMm ?? 0.15} mm
                 </span>
               </div>
             </div>
@@ -211,7 +380,7 @@ export const CadExportModal: React.FC<CadExportModalProps> = ({
           {/* 1. Format Selection */}
           <div className="space-y-1.5">
             <label className="text-[11px] font-mono uppercase tracking-wider text-slate-400 block font-semibold">
-              1. Select CAD File Format
+              1. CAD Geometry File Format
             </label>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {[
@@ -351,38 +520,6 @@ export const CadExportModal: React.FC<CadExportModalProps> = ({
             </div>
           </div>
 
-          {/* 3D Printing Slicer Parameter Recommendations */}
-          {(dimensions.materialCategory === 'filaments' || dimensions.material.startsWith('p') || scope === 'port_only') && (
-            <div className="bg-cyan-950/40 border border-cyan-700/80 p-3 rounded-xl space-y-1.5 font-mono text-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-cyan-300 font-bold flex items-center gap-1.5">
-                  <Printer className="w-4 h-4 text-cyan-400" />
-                  <span>Recommended Slicer Parameters (PrusaSlicer / Bambu Studio / Cura)</span>
-                </span>
-                <span className="text-[10px] bg-cyan-950 px-2 py-0.5 rounded border border-cyan-600 text-cyan-200 font-bold">
-                  Airtight Acoustic Profile
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-300 font-sans">
-                To guarantee zero pressure leakage and flexural compliance damping under acoustic load:
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[10px] text-slate-200 pt-1 font-mono">
-                <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
-                  <span className="text-slate-400 block font-bold">Perimeter Shells:</span>
-                  <span className="text-amber-400 font-bold">≥ {dimensions.perimeterShells ?? 6} Shells (~2.4 mm)</span>
-                </div>
-                <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
-                  <span className="text-slate-400 block font-bold">Infill Density:</span>
-                  <span className="text-cyan-300 font-bold">{dimensions.infillPercent ?? 40}% Gyroid Isotropic</span>
-                </div>
-                <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
-                  <span className="text-slate-400 block font-bold">Top/Bottom Layers:</span>
-                  <span className="text-emerald-400 font-bold">6 Solid Top/Bottom Layers</span>
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* 3. Units & Scale Settings */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
             <div className="bg-slate-950/70 border border-slate-800 p-3 rounded-xl space-y-1.5">
@@ -452,50 +589,37 @@ export const CadExportModal: React.FC<CadExportModalProps> = ({
             </div>
           </div>
 
-          {/* 3D Printable Port Specification Card */}
-          {results.portMatch && (scope === 'port_only' || results.portMatch.status === 'custom_3d_print') && (
-            <div className="bg-slate-950/90 border border-cyan-800/80 rounded-xl p-3.5 space-y-2 font-mono">
-              <div className="flex items-center justify-between text-xs pb-1.5 border-b border-slate-800/80">
-                <span className="text-cyan-300 font-bold uppercase tracking-wider flex items-center gap-1.5">
-                  <Printer className="w-4 h-4 text-cyan-400" />
-                  <span>3D Printable Port Resonator Specs</span>
+          {/* 3D Print Port Telemetry Banner if Port is Included */}
+          {results.portMatch && scope === 'port_only' && (
+            <div className="bg-slate-950/70 border border-slate-800 p-3 rounded-xl space-y-1.5 font-mono text-xs">
+              <div className="flex items-center justify-between text-slate-300">
+                <span className="font-semibold text-cyan-400 flex items-center gap-1.5">
+                  <Wind className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Synthesized Parametric Port Geometry</span>
                 </span>
-                <span
-                  className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${
-                    results.portMatch.status === 'cots_available'
-                      ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
-                      : 'bg-cyan-950 text-cyan-300 border border-cyan-800'
-                  }`}
-                >
-                  {results.portMatch.status === 'cots_available' ? 'COTS Catalog Match' : 'Custom 3D-Print Optimized'}
+                <span className="text-[10px] bg-slate-900 px-2 py-0.5 rounded border border-slate-700 text-slate-300">
+                  {results.portMatch.synthesizedProfileName}
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
-                <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
-                  <span className="text-slate-500 text-[10px] block">PRINT ENVELOPE (X×Y×Z)</span>
-                  <span className="text-slate-200 font-bold">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px] text-slate-300 pt-1 font-mono">
+                <div className="bg-slate-900/60 p-1.5 rounded border border-slate-800">
+                  <span className="text-slate-500 block">ENVELOPE (XYZ):</span>
+                  <span className="font-bold text-slate-200">
                     {results.portMatch.printDimensionsMm.widthMm} × {results.portMatch.printDimensionsMm.heightMm} × {results.portMatch.printDimensionsMm.depthMm} mm
                   </span>
                 </div>
-
-                <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
-                  <span className="text-slate-500 text-[10px] block">SALVATTI FLARE RADIUS</span>
-                  <span className="text-emerald-400 font-bold">
-                    r_f = {results.portMatch.salvattiFlareRadiusMm} mm
-                  </span>
+                <div className="bg-slate-900/60 p-1.5 rounded border border-slate-800">
+                  <span className="text-slate-500 block">WALL THICKNESS:</span>
+                  <span className="font-bold text-cyan-300">{results.portMatch.structuralWallThicknessMm} mm solid</span>
                 </div>
-
-                <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
-                  <span className="text-slate-500 text-[10px] block">WALL THICKNESS</span>
-                  <span className="text-amber-300 font-bold">
-                    {results.portMatch.structuralWallThicknessMm} mm (Acoustic Rigid)
-                  </span>
+                <div className="bg-slate-900/60 p-1.5 rounded border border-slate-800">
+                  <span className="text-slate-500 block">BELLMOUTH FLARE:</span>
+                  <span className="font-bold text-amber-300">R{results.portMatch.salvattiFlareRadiusMm} mm curvature</span>
                 </div>
-
-                <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
-                  <span className="text-slate-500 text-[10px] block">MODULAR SLICE JOINTS</span>
-                  <span className="text-cyan-300 font-bold">
+                <div className="bg-slate-900/60 p-1.5 rounded border border-slate-800">
+                  <span className="text-slate-500 block">PRINT SPLIT:</span>
+                  <span className="font-bold text-slate-200">
                     {results.portMatch.needsModularSplit
                       ? `${results.portMatch.splitSegmentCount} Slip-Fit Segs`
                       : '1 Piece (<220mm Z)'}

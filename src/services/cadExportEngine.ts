@@ -14,6 +14,132 @@ export type CadExportScope =
 
 export type CadExportUnits = 'mm' | 'inch' | 'meter';
 
+export type ManufacturingProfileId =
+  | 'cnc_router_5mm'
+  | 'cnc_router_6mm'
+  | '3d_print_fdm_04'
+  | '3d_print_sla'
+  | 'table_saw_joinery'
+  | 'laser_waterjet_metal';
+
+export interface ManufacturingProfileSpec {
+  id: ManufacturingProfileId;
+  name: string;
+  badge: string;
+  category: 'cnc' | '3d_print' | 'traditional' | 'sheet_metal';
+  description: string;
+  recommendedFormat: CadExportFormat;
+  recommendedScope: CadExportScope;
+  recommendedUnits: CadExportUnits;
+  defaultToleranceMm: number;
+  toolDiameterMm?: number;
+  layerHeightMm?: number;
+  dogboneCompensation: boolean;
+  minInternalRadiusMm: number;
+  recommendedMaterials: string[];
+  manufacturingNotes: string;
+}
+
+export const MANUFACTURING_PROFILES: Record<ManufacturingProfileId, ManufacturingProfileSpec> = {
+  cnc_router_5mm: {
+    id: 'cnc_router_5mm',
+    name: 'CNC Router - 5mm Compression Bit',
+    badge: 'CNC 5mm Bit • ±0.15mm',
+    category: 'cnc',
+    description: 'Nested flat-sheet CNC routing optimized for 15mm/18mm Baltic Birch plywood, MDF, or solid wood panels.',
+    recommendedFormat: 'step',
+    recommendedScope: 'woodwork_only',
+    recommendedUnits: 'mm',
+    defaultToleranceMm: 0.15,
+    toolDiameterMm: 5.0,
+    dogboneCompensation: true,
+    minInternalRadiusMm: 2.5,
+    recommendedMaterials: ['Baltic Birch Plywood', 'MDF / HDF', 'Solid Hardwood'],
+    manufacturingNotes: '5mm diameter compression endmill leaves clean top and bottom veneers. Internal 90° corners utilize 2.5mm radius dogbone relief for tight tongue-and-groove joints.',
+  },
+  cnc_router_6mm: {
+    id: 'cnc_router_6mm',
+    name: 'CNC Router - 6.35mm (1/4") Endmill',
+    badge: 'CNC 1/4" Bit • ±0.20mm',
+    category: 'cnc',
+    description: 'Heavy industrial CNC profile using standard 1/4" bits for high-speed panel cutting, deep dadoes, and driver rebating.',
+    recommendedFormat: 'step',
+    recommendedScope: 'woodwork_only',
+    recommendedUnits: 'mm',
+    defaultToleranceMm: 0.20,
+    toolDiameterMm: 6.35,
+    dogboneCompensation: true,
+    minInternalRadiusMm: 3.175,
+    recommendedMaterials: ['Baltic Birch Plywood', 'Marine Plywood', 'Extruded Aluminum'],
+    manufacturingNotes: 'Standard 1/4" tooling bit enables high feed rates. 0.20mm nominal dado clearance ensures glue gap for PVA or polyurethane wood adhesives.',
+  },
+  '3d_print_fdm_04': {
+    id: '3d_print_fdm_04',
+    name: '3D Print - FDM 0.4mm Nozzle',
+    badge: 'FDM 0.4mm • ±0.25mm',
+    category: '3d_print',
+    description: 'Additive manufacturing profile for aerodynamic port flares, oblate spheroidal waveguides, and custom acoustic conduits.',
+    recommendedFormat: 'stl_binary',
+    recommendedScope: 'port_only',
+    recommendedUnits: 'mm',
+    defaultToleranceMm: 0.25,
+    toolDiameterMm: 0.4,
+    layerHeightMm: 0.20,
+    dogboneCompensation: false,
+    minInternalRadiusMm: 0.4,
+    recommendedMaterials: ['PETG-CF', 'PLA+', 'ABS / ASA'],
+    manufacturingNotes: '0.25mm horizontal clearance offset accounts for plastic thermal shrinkage and extrusion expansion. Minimum 6 solid perimeters (~2.4mm) required for acoustic mass.',
+  },
+  '3d_print_sla': {
+    id: '3d_print_sla',
+    name: '3D Print - SLA / MSLA Resin (0.05mm)',
+    badge: 'SLA Resin • ±0.05mm',
+    category: '3d_print',
+    description: 'Ultra-high resolution stereolithography profile for microscopic aerodynamic surface smoothness, phase plugs, and tweeters.',
+    recommendedFormat: 'stl_binary',
+    recommendedScope: 'port_only',
+    recommendedUnits: 'mm',
+    defaultToleranceMm: 0.05,
+    toolDiameterMm: 0.05,
+    layerHeightMm: 0.05,
+    dogboneCompensation: false,
+    minInternalRadiusMm: 0.1,
+    recommendedMaterials: ['Engineering Tough Resin', 'Ceramic-Infused Resin'],
+    manufacturingNotes: 'Sub-millimeter layer resolution eliminates stepping artifacts and boundary-layer turbulence drag without post-print vapor smoothing.',
+  },
+  table_saw_joinery: {
+    id: 'table_saw_joinery',
+    name: 'Precision Table Saw / Traditional Joinery',
+    badge: 'Table Saw • 0.0mm Nominal',
+    category: 'traditional',
+    description: 'Manual workshop fabrication with sliding table saw, track saw, and router table. True nominal dimensions for cut-list adherence.',
+    recommendedFormat: 'obj',
+    recommendedScope: 'woodwork_only',
+    recommendedUnits: 'mm',
+    defaultToleranceMm: 0.0,
+    dogboneCompensation: false,
+    minInternalRadiusMm: 0,
+    recommendedMaterials: ['Baltic Birch 18mm', 'MDF 19mm', 'Solid Timber'],
+    manufacturingNotes: 'Nominal outer boundary cuts with 0.0mm offset for direct alignment with CutListSheet layout diagrams and manual blade kerf compensation.',
+  },
+  laser_waterjet_metal: {
+    id: 'laser_waterjet_metal',
+    name: 'CNC Laser / Waterjet (Metal & Acrylic)',
+    badge: 'Laser/Waterjet • ±0.08mm',
+    category: 'sheet_metal',
+    description: '2D sheet cutting for steel speakON dishes, 2mm aluminum heatsink backplates, and decorative acrylic bezels.',
+    recommendedFormat: 'step',
+    recommendedScope: 'full_assembly',
+    recommendedUnits: 'mm',
+    defaultToleranceMm: 0.08,
+    toolDiameterMm: 0.2,
+    dogboneCompensation: false,
+    minInternalRadiusMm: 0.1,
+    recommendedMaterials: ['1.5mm Mild Steel', '2.0mm 6061-T6 Aluminum', '5mm Cast Acrylic'],
+    manufacturingNotes: 'Kerf offset of 0.08mm compensates for narrow laser/abrasive waterjet beam width, producing exact hole centers for M3/M3.5 countersinks.',
+  },
+};
+
 export interface CadExportOptions {
   format: CadExportFormat;
   scope: CadExportScope;
@@ -21,6 +147,8 @@ export interface CadExportOptions {
   forceAssembled?: boolean; // ignore exploded view offsets
   includeBracing?: boolean;
   includePort?: boolean;
+  manufacturingProfile?: ManufacturingProfileId;
+  toleranceClearanceMm?: number;
 }
 
 export interface ModelGeometryStats {
@@ -30,6 +158,7 @@ export interface ModelGeometryStats {
   driverCount: number;
   totalTriangles: number;
   totalVertices: number;
+  appliedToleranceClearanceMm?: number;
 }
 
 /**
@@ -295,7 +424,8 @@ export function buildCadFilename(
   dimensions: EnclosureDimensions,
   acoustics: AcousticParameters,
   format: CadExportFormat,
-  scope: CadExportScope
+  scope: CadExportScope,
+  profileId?: ManufacturingProfileId
 ): string {
   const woofer = acoustics.driverAssignments.woofer.driver;
   const brand = woofer.brand.replace(/[^a-zA-Z0-9]/g, '');
@@ -308,9 +438,19 @@ export function buildCadFilename(
   else if (scope === 'port_only') scopeLabel = 'PortResonator';
   else if (scope === 'bracing_only') scopeLabel = 'MatrixBracing';
 
+  let profileLabel = '';
+  if (profileId) {
+    if (profileId === 'cnc_router_5mm') profileLabel = '_CNC5mm';
+    else if (profileId === 'cnc_router_6mm') profileLabel = '_CNC6mm';
+    else if (profileId === '3d_print_fdm_04') profileLabel = '_FDM04';
+    else if (profileId === '3d_print_sla') profileLabel = '_SLAResin';
+    else if (profileId === 'table_saw_joinery') profileLabel = '_Joinery';
+    else if (profileId === 'laser_waterjet_metal') profileLabel = '_SheetMetal';
+  }
+
   let ext = 'stl';
   if (format === 'step') ext = 'step';
   else if (format === 'obj') ext = 'obj';
 
-  return `ResonanceCAD_${brand}_${model}_${scopeLabel}_${size}.${ext}`;
+  return `ResonanceCAD_${brand}_${model}_${scopeLabel}${profileLabel}_${size}.${ext}`;
 }
