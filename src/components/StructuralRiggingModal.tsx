@@ -50,7 +50,7 @@ interface StructuralRiggingModalProps {
   onClose: () => void;
   dimensions: EnclosureDimensions;
   onSwitchToPaArchitecture?: () => void;
-  onApplyRiggingSettings?: (tiltDeg: number, boxCount: number) => void;
+  onApplyRiggingSettings?: (tiltDeg: number, boxCount: number, totalMassKg: number) => void;
   embedded?: boolean;
 }
 
@@ -181,17 +181,16 @@ export const StructuralRiggingModal: React.FC<StructuralRiggingModalProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  // Quick remediation actions
-  const handleAutoFixUpgradePin = () => {
+  // Unified Rigging Safety Optimization
+  const handleAutoOptimizeRigging = () => {
     setPinSpecKey('pin_12mm_17_4ph');
-  };
-
-  const handleAutoFixRelaxAngle = () => {
-    setHangingAngleDeg((prev) => Math.max(-2, prev + 3));
-  };
-
-  const handleAutoFixBridle = () => {
     setPickPointConfig('dual_motor_bridle');
+    if (hangingAngleDeg < -4) {
+      setHangingAngleDeg(-3.0);
+    }
+    if (boxCount > 12) {
+      setBoxCount(12);
+    }
   };
 
   return (
@@ -230,6 +229,23 @@ export const StructuralRiggingModal: React.FC<StructuralRiggingModalProps> = ({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {onApplyRiggingSettings && (
+              <button
+                type="button"
+                onClick={() =>
+                  onApplyRiggingSettings(
+                    hangingAngleDeg,
+                    boxCount,
+                    report.totalSuspendedMassKg
+                  )
+                }
+                title="Sync Rigging Load & Tilt Configuration to Main Project"
+                className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/80 hover:bg-emerald-900 text-emerald-200 border border-emerald-700/80 font-mono text-xs font-semibold transition cursor-pointer"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Sync Rigging Spec</span>
+              </button>
+            )}
             <button
               onClick={handleDownloadCertificate}
               title="Download Structural Rigging Safety Audit Certificate (.json)"
@@ -321,27 +337,16 @@ export const StructuralRiggingModal: React.FC<StructuralRiggingModalProps> = ({
               </div>
             </div>
 
-            {/* Instant Remediation Action if violation */}
+            {/* Unified Remediation Action if violation */}
             {!report.isCompliant && (
               <div className="flex items-center gap-2 shrink-0">
-                {report.pinSpec.diameterMm < 12 && (
-                  <button
-                    type="button"
-                    onClick={handleAutoFixUpgradePin}
-                    className="py-1.5 px-3 rounded-lg bg-rose-800 hover:bg-rose-700 text-white font-bold text-[11px] transition cursor-pointer shadow"
-                  >
-                    Auto-Upgrade to 12mm Pins
-                  </button>
-                )}
-                {hangingAngleDeg < -4 && (
-                  <button
-                    type="button"
-                    onClick={handleAutoFixRelaxAngle}
-                    className="py-1.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 font-bold text-[11px] transition cursor-pointer"
-                  >
-                    Relax Tilt Angle
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={handleAutoOptimizeRigging}
+                  className="py-1.5 px-3 rounded-lg bg-rose-700 hover:bg-rose-600 text-white border border-rose-400/50 font-bold text-[11px] transition cursor-pointer shadow"
+                >
+                  Auto-Optimize Rigging Safety
+                </button>
               </div>
             )}
           </div>
@@ -925,7 +930,7 @@ export const StructuralRiggingModal: React.FC<StructuralRiggingModalProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    onApplyRiggingSettings(hangingAngleDeg, boxCount);
+                    onApplyRiggingSettings?.(hangingAngleDeg, boxCount, report.totalSuspendedMassKg);
                     onClose();
                   }}
                   className="py-2 px-4 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold flex items-center gap-1.5 shadow-md transition cursor-pointer"

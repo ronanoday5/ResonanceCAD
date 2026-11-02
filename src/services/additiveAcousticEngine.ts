@@ -375,10 +375,10 @@ export function buildAdditiveAcousticGroup(
     wireframe: isWireframe,
   });
 
-  // 1. BUILD REAR ACOUSTIC LABYRINTH TRAP
-  const trapW = intW * 0.74;
-  const trapH = intH * 0.68;
-  const trapD = Math.min(intD * 0.45, 0.045); // ~45mm depth
+  // 1. BUILD REAR ACOUSTIC LABYRINTH TRAP (Sized & Positioned to Clear Lower Rear Terminal Dish)
+  const trapW = intW * 0.68;
+  const trapH = intH * 0.44;
+  const trapD = Math.min(intD * 0.14, 0.032); // ≤32mm depth so it never hits woofer magnets or window brace
 
   const trapGroup = new THREE.Group();
   trapGroup.name = 'rear_acoustic_trap';
@@ -410,7 +410,7 @@ export function buildAdditiveAcousticGroup(
   trapGroup.add(rightWall);
 
   // Tortuous serpentine internal baffles (alternating left/right maze channels)
-  const baffleCount = 7;
+  const baffleCount = 5;
   const baffleSpacingY = trapH / (baffleCount + 1);
   const baffleLen = trapW * 0.82;
 
@@ -437,8 +437,8 @@ export function buildAdditiveAcousticGroup(
     }
   }
 
-  // Position trap directly on inside face of rear panel
-  trapGroup.position.set(0, 0, -intD / 2 + trapD / 2 + 0.002);
+  // Position trap on upper-middle inside face of rear panel (above SpeakON / Binding Post terminal dish)
+  trapGroup.position.set(0, intH * 0.14, -intD / 2 + trapD / 2 + 0.002);
   root.add(trapGroup);
 
   // 2. PROCEDURAL TPMS GYROID LATTICE SHEAR CORE (Sandwich lining on sidewalls)

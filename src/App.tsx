@@ -4,7 +4,9 @@ import {
   CATEGORY_SPECS,
   SUBCATEGORY_CONFIGS,
   type AcousticParameters,
+  type CaliberDeltaEvent,
   type CameraPreset,
+  type CoOptimizationConfig,
   type DriverPreset,
   type EnclosureDimensions,
   type MaterialType,
@@ -15,6 +17,7 @@ import {
 import {
   calculateAcoustics,
   calculateOptimalAlignment,
+  DEFAULT_PROCEDURAL_DIFFUSER_CONFIG,
   DRIVER_PRESETS,
   getDriversForSubcategory,
   MATERIAL_SPECS,
@@ -56,22 +59,36 @@ import {
   type ComplexityMode,
 } from './services/contextActionEngine.ts';
 import { DEFAULT_INTEGRAL_MATRIX_CONFIG } from './services/additiveAcousticEngine.ts';
+import {
+  computeFullMasterOptimizationPlan,
+  DEFAULT_CO_OPTIMIZATION_CONFIG,
+  runClosedLoopCoOptimization,
+} from './services/coOptimizationEngine.ts';
 import { Activity, Box, CheckCircle, Cpu, FileSpreadsheet, Layers, X } from 'lucide-react';
 
 export default function App() {
-  const [dimensions, setDimensions] = useState<EnclosureDimensions>({
-    externalWidthMm: 330,
-    externalHeightMm: 580,
-    externalDepthMm: 380,
+  const [dimensions, setDimensionsState] = useState<EnclosureDimensions>({
+    externalWidthMm: 274,
+    externalHeightMm: 422,
+    externalDepthMm: 332,
     material: 'baltic_birch_18',
     baffleThicknessMm: 18,
     jointType: 'rabbet',
     category: 'studio_monitor',
     subcategory: 'nearfield_2way',
-    hardware: { ...CATEGORY_SPECS.studio_monitor.defaultHardware },
+    hardware: {
+      ...CATEGORY_SPECS.studio_monitor.defaultHardware,
+      showThermalVentSlots: true,
+    },
+    thermalVentConfig: {
+      enabled: true,
+      sizingMode: 'auto_driver_pe',
+      pattern: 'convective_dual_bank',
+      hasInternalHermeticHeatExchanger: true,
+    },
   });
 
-  const [acoustics, setAcoustics] = useState<AcousticParameters>({
+  const [acoustics, setAcousticsState] = useState<AcousticParameters>({
     topology: 'two_way',
     driverAssignments: {
       woofer: {
@@ -98,18 +115,21 @@ export default function App() {
     },
     alignment: 'ported',
     targetQtc: 0.707,
-    targetFb: 45,
+    targetFb: 41.3,
     portType: 'round',
     portPlacement: 'auto',
     portDiameterMm: 80,
     flareRadiusMm: 18,
     isDoubleFlared: true,
-    slotWidthMm: 290,
+    slotWidthMm: 230,
     slotHeightMm: 45,
-    slotLipRadiusMm: 12,
+    slotLipRadiusMm: 14,
     numberOfPorts: 1,
-    dampingFillPercent: 50,
+    dampingFillPercent: 35,
+    absorptionMaterialType: 'pu_foam',
     bracingLevel: 'standard',
+    braceApertureChamferDeg: 45,
+    baffleEdgeRadiusMm: 22,
     materialPricing: {
       customDensityKgM3: 680,
       costPerSquareMeter: 68,
@@ -122,6 +142,26 @@ export default function App() {
     highPassOrder: 2,
     highPassType: 'linkwitz_riley',
   });
+
+  const [coOptConfig, setCoOptConfig] = useState<CoOptimizationConfig>(
+    DEFAULT_CO_OPTIMIZATION_CONFIG
+  );
+  const [lastCaliberDelta, setLastCaliberDelta] = useState<CaliberDeltaEvent | null>(null);
+
+  const latestDimsRef = React.useRef<EnclosureDimensions>(dimensions);
+  latestDimsRef.current = dimensions;
+  const latestAcousticsRef = React.useRef<AcousticParameters>(acoustics);
+  latestAcousticsRef.current = acoustics;
+  const coOptConfigRef = React.useRef<CoOptimizationConfig>(coOptConfig);
+  coOptConfigRef.current = coOptConfig;
+
+  // Synchronous batch refs so sequential setDimensions() + setAcoustics() in the same event tick compose cleanly
+  const baselineSnapshotRef = React.useRef<{
+    dims: EnclosureDimensions;
+    acoustics: AcousticParameters;
+  } | null>(null);
+  const rawUserDimsRef = React.useRef<EnclosureDimensions>(dimensions);
+  const rawUserAcousticsRef = React.useRef<AcousticParameters>(acoustics);
 
   const [explodedPercent, setExplodedPercent] = useState<number>(0);
   const [isXRayMode, setIsXRayMode] = useState<boolean>(false);
@@ -142,9 +182,7 @@ export default function App() {
   const [focusedSectionId, setFocusedSectionId] = useState<string | null>(null);
 
   // Modals State
-  const [isCutListModalOpen, setIsCutListModalOpen] = useState<boolean>(false);
   const [isResponseChartOpen, setIsResponseChartOpen] = useState<boolean>(false);
-  const [isCrossoverModalOpen, setIsCrossoverModalOpen] = useState<boolean>(false);
   const [isCustomDriverOpen, setIsCustomDriverOpen] = useState<boolean>(false);
   const [isProjectManagerOpen, setIsProjectManagerOpen] = useState<boolean>(false);
   const [isSetupWizardOpen, setIsSetupWizardOpen] = useState<boolean>(false);
@@ -172,6 +210,85 @@ export default function App() {
       notificationTimerRef.current = null;
     }, durationMs);
   }, []);
+
+  const commitCoOptimizedMutation = useCallback(
+    (nextRawDims: EnclosureDimensions, nextRawAcoustics: AcousticParameters, label?: string) => {
+      if (!baselineSnapshotRef.current) {
+        baselineSnapshotRef.current = {
+          dims: latestDimsRef.current,
+          acoustics: latestAcousticsRef.current,
+        };
+        queueMicrotask(() => {
+          baselineSnapshotRef.current = null;
+        });
+      }
+
+      rawUserDimsRef.current = nextRawDims;
+      rawUserAcousticsRef.current = nextRawAcoustics;
+
+      const coOpt = runClosedLoopCoOptimization(
+        baselineSnapshotRef.current.dims,
+        baselineSnapshotRef.current.acoustics,
+        rawUserDimsRef.current,
+        rawUserAcousticsRef.current,
+        coOptConfigRef.current,
+        label
+      );
+
+      latestDimsRef.current = coOpt.dimensions;
+      latestAcousticsRef.current = coOpt.acoustics;
+      setDimensionsState(coOpt.dimensions);
+      setAcousticsState(coOpt.acoustics);
+      setLastCaliberDelta(coOpt.deltaEvent);
+
+      if (coOpt.deltaEvent.coOptimizedActions.length > 0) {
+        const sign = coOpt.deltaEvent.deltaScore >= 0 ? '+' : '';
+        showToast(
+          `Caliber ${coOpt.deltaEvent.currentScore.toFixed(1)}/100 (${sign}${coOpt.deltaEvent.deltaScore.toFixed(1)}) · ${coOpt.deltaEvent.coOptimizedActions.join(' • ')}`,
+          4500
+        );
+      }
+    },
+    [showToast]
+  );
+
+  const setDimensions: React.Dispatch<React.SetStateAction<EnclosureDimensions>> = useCallback(
+    (updater) => {
+      const baseDims = baselineSnapshotRef.current ? rawUserDimsRef.current : latestDimsRef.current;
+      const baseAcoustics = baselineSnapshotRef.current
+        ? rawUserAcousticsRef.current
+        : latestAcousticsRef.current;
+      const resolvedNextDims = typeof updater === 'function' ? updater(baseDims) : updater;
+      commitCoOptimizedMutation(resolvedNextDims, baseAcoustics, 'Enclosure Update');
+    },
+    [commitCoOptimizedMutation]
+  );
+
+  const setAcoustics: React.Dispatch<React.SetStateAction<AcousticParameters>> = useCallback(
+    (updater) => {
+      const baseDims = baselineSnapshotRef.current ? rawUserDimsRef.current : latestDimsRef.current;
+      const baseAcoustics = baselineSnapshotRef.current
+        ? rawUserAcousticsRef.current
+        : latestAcousticsRef.current;
+      const resolvedNextAcoustics =
+        typeof updater === 'function' ? updater(baseAcoustics) : updater;
+      commitCoOptimizedMutation(baseDims, resolvedNextAcoustics, 'Acoustic Parameter Update');
+    },
+    [commitCoOptimizedMutation]
+  );
+
+  const handleToggleCoOpt = useCallback(() => {
+    setCoOptConfig((prev) => {
+      const nextEnabled = !prev.enabled;
+      showToast(
+        nextEnabled
+          ? 'Live Closed-Loop Multiphysics Co-Optimization enabled'
+          : 'Closed-Loop Co-Optimization paused (Manual Override Mode)',
+        4000
+      );
+      return { ...prev, enabled: nextEnabled };
+    });
+  }, [showToast]);
 
   const handleOpenCadExport = useCallback((scope?: CadExportScope) => {
     if (scope) setCadExportScope(scope);
@@ -331,291 +448,53 @@ export default function App() {
   const selectedPart = selectedPartId ? partMetadataMap[selectedPartId] || null : null;
 
   const autoOptimizePlan = useMemo(() => {
-    const woofer = acoustics.driverAssignments.woofer.driver;
-    const optimal = calculateOptimalAlignment(woofer, acoustics.alignment);
-    const material = MATERIAL_SPECS[dimensions.material] || MATERIAL_SPECS.baltic_birch_18;
-    const t = material.nominalThicknessMm;
-
-    const wooferQty =
-      dimensions.subcategory === 'dual_18_reflex'
-        ? 2
-        : acoustics.topology === 'mtm'
-        ? 2
-        : acoustics.driverAssignments.woofer.quantity || 1;
-
-    const activeCatSpec =
-      CATEGORY_SPECS[dimensions.category || 'studio_monitor'] || CATEGORY_SPECS.studio_monitor;
-    const categoryMaxVelMs = activeCatSpec.maxRecommendedPortVelocityMs || 14.0;
-
-    const targetNetLiters = optimal.optimalVbLiters * wooferQty;
-    const hasVolumeMismatch =
-      Math.abs(acousticResults.netVolumeLiters - targetNetLiters) >
-      Math.max(4, targetNetLiters * 0.14);
-    const hasTuningMismatch =
-      acoustics.alignment === 'ported'
-        ? Math.abs((acoustics.targetFb || acousticResults.tuningFrequencyFb) - optimal.optimalFbHz) > 2
-        : Math.abs((acoustics.targetQtc || acousticResults.boxQtc) - optimal.targetQtc) > 0.05;
-    const hasPortTurbulence =
-      acoustics.alignment === 'ported' &&
-      (acousticResults.isChuffingRisk || acousticResults.portAirVelocityMs > categoryMaxVelMs);
-    const hasClash = Boolean(
-      acousticResults.layout?.hasCollision ||
-        acousticResults.layout?.airflowInterference?.hasInterference
-    );
-    const hasDampingMismatch = Boolean(
-      acousticResults.dampingAdvisor &&
-        (Math.abs(
-          (acoustics.dampingFillPercent ?? 50) -
-            acousticResults.dampingAdvisor.recommendedFillPercent
-        ) > 5 ||
-          acoustics.absorptionMaterialType !==
-            acousticResults.dampingAdvisor.recommendedMaterial)
-    );
-
-    let candidateDims: EnclosureDimensions = { ...dimensions };
-    let candidateAcoustics: AcousticParameters = { ...acoustics };
-    const actionsTaken: string[] = [];
-
-    // Helper: size port cross-sectional area so both base velocity and rated-power velocity stay laminar
-    const applyLaminarPortSizing = (
-      dims: EnclosureDimensions,
-      ac: AcousticParameters,
-      refResults: ReturnType<typeof calculateAcoustics>,
-      turbulenceFactor = 1.0
-    ): AcousticParameters => {
-      const catSpec =
-        CATEGORY_SPECS[dims.category || 'studio_monitor'] || CATEGORY_SPECS.studio_monitor;
-      const maxVelMs = catSpec.maxRecommendedPortVelocityMs || 14.0;
-      const totalSdM2 = (woofer.sd || 500) * wooferQty * 1e-4;
-      const xmaxM = (woofer.xmax || 5) * 1e-3;
-      const vdM3 = totalSdM2 * xmaxM;
-      const fb = Math.max(18, ac.targetFb || 35);
-
-      // Account for rated-power sonic Mach limit (34 m/s) in parametricPortEngine
-      const powerScaleFactor = Math.sqrt(Math.max(100, woofer.pe || 250) / 100);
-      const sonicSafeVelocityMs = 31.0 / Math.max(1.0, powerScaleFactor * 1.12);
-      const effectiveTargetVelMs =
-        Math.max(5.5, Math.min(maxVelMs * 0.82, sonicSafeVelocityMs)) /
-        Math.max(1.0, turbulenceFactor);
-
-      const intW = Math.max(80, dims.externalWidthMm - 2 * t);
-      const intH = Math.max(80, dims.externalHeightMm - 2 * t);
-      const reqTotalAreaM2 = (2 * Math.PI * fb * vdM3) / effectiveTargetVelMs;
-
-      if (ac.portType === 'slot') {
-        const currentWidthMm = Math.min(
-          intW - 12,
-          Math.max(ac.slotWidthMm || 160, Math.round(intW * 0.88))
-        );
-        const maxSafeSlotHeightMm = Math.max(36, Math.min(160, Math.floor(intH * 0.36)));
-        let numPorts = Math.max(1, ac.numberOfPorts || 1);
-        let reqPerPortAreaMm2 = (reqTotalAreaM2 / numPorts) * 1e6;
-        let neededHeightMm = Math.ceil(reqPerPortAreaMm2 / currentWidthMm);
-
-        while (neededHeightMm > maxSafeSlotHeightMm && numPorts < 4) {
-          numPorts += 1;
-          reqPerPortAreaMm2 = (reqTotalAreaM2 / numPorts) * 1e6;
-          neededHeightMm = Math.ceil(reqPerPortAreaMm2 / currentWidthMm);
-        }
-
-        const nextHeightMm = Math.min(
-          maxSafeSlotHeightMm,
-          Math.max(ac.slotHeightMm || 45, Math.max(28, neededHeightMm))
-        );
-        const nextLipMm = Math.max(ac.slotLipRadiusMm || 14, 18);
-
-        return {
-          ...ac,
-          numberOfPorts: numPorts,
-          slotWidthMm: currentWidthMm,
-          slotHeightMm: nextHeightMm,
-          slotLipRadiusMm: nextLipMm,
-        };
-      }
-
-      const maxFitDia = Math.max(55, Math.min(165, Math.floor((intW - 32) / 1.35)));
-      let numPorts = Math.max(1, ac.numberOfPorts || 1);
-      let reqPerPortAreaMm2 = (reqTotalAreaM2 / numPorts) * 1e6;
-      let reqDiameterMm = Math.ceil(2 * Math.sqrt(reqPerPortAreaMm2 / Math.PI));
-      const minEmpiricalDia = Math.ceil(
-        (refResults.recommendedMinimumPortDiameterMm || 76) / Math.sqrt(numPorts)
-      );
-      let targetDia = Math.max(reqDiameterMm, minEmpiricalDia);
-
-      while (targetDia > maxFitDia && numPorts < 4) {
-        numPorts += 1;
-        reqPerPortAreaMm2 = (reqTotalAreaM2 / numPorts) * 1e6;
-        reqDiameterMm = Math.ceil(2 * Math.sqrt(reqPerPortAreaMm2 / Math.PI));
-        targetDia = Math.max(
-          reqDiameterMm,
-          Math.ceil((refResults.recommendedMinimumPortDiameterMm || 76) / Math.sqrt(numPorts))
-        );
-      }
-
-      const nextDia = Math.min(maxFitDia, Math.max(ac.portDiameterMm, targetDia));
-      const nextFlare = Math.min(
-        Math.floor((intW - nextDia - 20) / 2),
-        Math.max(ac.flareRadiusMm || 16, Math.round(nextDia * 0.22))
-      );
-      const safeFlare = Math.max(12, nextFlare);
-
-      return {
-        ...ac,
-        numberOfPorts: numPorts,
-        portDiameterMm: nextDia,
-        flareRadiusMm: safeFlare,
-        isDoubleFlared: true,
-      };
-    };
-
-    // Stage 1: Volume & Tuning Alignment
-    if (hasVolumeMismatch) {
-      const targetGrossLiters = targetNetLiters * 1.15;
-      const aspectH =
-        acoustics.topology === 'three_way' || acoustics.topology === 'mtm' ? 1.85 : 1.55;
-      const aspectD = 1.15;
-      const baseIntW = Math.round(Math.cbrt((targetGrossLiters * 1000000) / (aspectH * aspectD)));
-      const newW = Math.min(
-        750,
-        Math.max(240, Math.max(woofer.frameOuterDiameterMm + 40, baseIntW + 2 * t))
-      );
-      const newH = Math.min(1300, Math.max(280, Math.round((newW - 2 * t) * aspectH + 2 * t)));
-      const intAreaMm2 = Math.max(10000, (newW - 2 * t) * (newH - 2 * t));
-      const reqIntDepthMm = Math.round((targetGrossLiters * 1000000) / intAreaMm2);
-      const minDriverDepthMm = Math.round(
-        (woofer.mountingDepthMm || 120) + (woofer.magnetDepthMm || 40) + 55 + 2 * t
-      );
-      const newD = Math.min(800, Math.max(220, Math.max(minDriverDepthMm, reqIntDepthMm + 2 * t)));
-
-      candidateDims = {
-        ...candidateDims,
-        externalWidthMm: newW,
-        externalHeightMm: newH,
-        externalDepthMm: newD,
-      };
-    }
-
-    if (hasVolumeMismatch || hasTuningMismatch) {
-      candidateAcoustics = {
-        ...candidateAcoustics,
-        targetFb: optimal.optimalFbHz,
-        targetQtc: optimal.targetQtc,
-      };
-      actionsTaken.push('Vb/Fb Aligned');
-    }
-
-    // Check intermediate acoustics after Stage 1 to see if damping or port velocity needs adjustment
-    const midResults = calculateAcoustics(candidateDims, candidateAcoustics);
-    if (midResults.dampingAdvisor) {
-      candidateAcoustics = {
-        ...candidateAcoustics,
-        dampingFillPercent: midResults.dampingAdvisor.recommendedFillPercent,
-        absorptionMaterialType: midResults.dampingAdvisor.recommendedMaterial,
-      };
-    }
-
-    const needsPortSizing =
-      candidateAcoustics.alignment !== 'sealed' &&
-      (hasPortTurbulence ||
-        midResults.isChuffingRisk ||
-        midResults.portAirVelocityMs > categoryMaxVelMs);
-
-    // Stage 2: Laminar Port Velocity Sizing (strictly below category-specific & Mach chuffing limit)
-    if (needsPortSizing) {
-      const midTurb = midResults.layout?.airflowInterference?.turbulenceMultiplier || 1.0;
-      candidateAcoustics = applyLaminarPortSizing(
-        candidateDims,
-        candidateAcoustics,
-        midResults,
-        midTurb
-      );
-      actionsTaken.push('Laminar Port Sized');
-    }
-
-    // Stage 3: 2D/3D Baffle Clash & Recursive Z-Depth Clamping
-    const prelimResults = calculateAcoustics(candidateDims, candidateAcoustics);
-    const resolved = autoResolveBaffleClashes(candidateDims, candidateAcoustics, prelimResults);
-    if (hasClash || prelimResults.layout?.hasCollision) {
-      actionsTaken.push('3D Clashes Cleared');
-    }
-
-    const finalDims = resolved.dimensions;
-    let finalAcoustics = resolved.acoustics;
-    let finalRes = calculateAcoustics(finalDims, finalAcoustics);
-
-    // Post-clash verification: if autoResolveBaffleClashes switched port topology (e.g. round -> slot) and left chuffing active, resize port
-    if (
-      finalAcoustics.alignment !== 'sealed' &&
-      (finalRes.isChuffingRisk || finalRes.portAirVelocityMs > categoryMaxVelMs)
-    ) {
-      const postTurb = finalRes.layout?.airflowInterference?.turbulenceMultiplier || 1.0;
-      finalAcoustics = applyLaminarPortSizing(finalDims, finalAcoustics, finalRes, postTurb);
-      finalRes = calculateAcoustics(finalDims, finalAcoustics);
-      if (!actionsTaken.includes('Laminar Port Sized')) {
-        actionsTaken.push('Laminar Port Sized');
-      }
-    }
-
-    const dimsChanged =
-      Math.abs(finalDims.externalWidthMm - dimensions.externalWidthMm) > 1 ||
-      Math.abs(finalDims.externalHeightMm - dimensions.externalHeightMm) > 1 ||
-      Math.abs(finalDims.externalDepthMm - dimensions.externalDepthMm) > 1;
-
-    const acousticsChanged =
-      Math.abs((finalAcoustics.targetFb || 0) - (acoustics.targetFb || 0)) > 0.5 ||
-      Math.abs((finalAcoustics.targetQtc || 0) - (acoustics.targetQtc || 0)) > 0.02 ||
-      finalAcoustics.portType !== acoustics.portType ||
-      finalAcoustics.numberOfPorts !== acoustics.numberOfPorts ||
-      Math.abs((finalAcoustics.portDiameterMm || 0) - (acoustics.portDiameterMm || 0)) > 1 ||
-      Math.abs((finalAcoustics.slotWidthMm || 0) - (acoustics.slotWidthMm || 0)) > 1 ||
-      Math.abs((finalAcoustics.slotHeightMm || 0) - (acoustics.slotHeightMm || 0)) > 1 ||
-      Math.abs((finalAcoustics.dampingFillPercent ?? 50) - (acoustics.dampingFillPercent ?? 50)) >
-        1 ||
-      finalAcoustics.absorptionMaterialType !== acoustics.absorptionMaterialType;
-
-    const pendingReasons: string[] = [];
-    if (hasClash) pendingReasons.push('3D Clash');
-    if (hasPortTurbulence) pendingReasons.push('Port Velocity');
-    if ((hasVolumeMismatch && dimsChanged) || hasTuningMismatch) {
-      pendingReasons.push('Vb/Fb Alignment');
-    }
-    if (hasDampingMismatch && acousticsChanged && pendingReasons.length === 0) {
-      pendingReasons.push('Damping Fill');
-    }
-
-    const hasPendingOptimizations =
-      pendingReasons.length > 0 && (dimsChanged || acousticsChanged || hasClash || hasPortTurbulence);
-
-    return {
-      finalDims,
-      finalAcoustics,
-      finalRes,
-      actionsTaken,
-      pendingReasons,
-      hasPendingOptimizations,
-    };
+    return computeFullMasterOptimizationPlan(dimensions, acoustics, acousticResults);
   }, [acoustics, dimensions, acousticResults]);
 
   const handleAutoOptimizeSystem = useCallback(() => {
+    const prevScore = acousticResults.caliberReport?.overallScore ?? 90;
     const { finalDims, finalAcoustics, finalRes, actionsTaken } = autoOptimizePlan;
-    setDimensions(finalDims);
-    setAcoustics(finalAcoustics);
+    latestDimsRef.current = finalDims;
+    latestAcousticsRef.current = finalAcoustics;
+    setDimensionsState(finalDims);
+    setAcousticsState(finalAcoustics);
 
-    const summaryBadges = actionsTaken.length > 0 ? actionsTaken.join(' • ') : 'System Verified';
+    const newScore = finalRes.caliberReport?.overallScore ?? 98;
+    setLastCaliberDelta({
+      timestamp: Date.now(),
+      previousScore: prevScore,
+      currentScore: newScore,
+      deltaScore: Math.round((newScore - prevScore) * 10) / 10,
+      triggerDescription: '8-Stage Master Reference Auto-Optimize',
+      coOptimizedActions: actionsTaken,
+      vbDriftLiters: Math.round((finalRes.netVolumeLiters - acousticResults.netVolumeLiters) * 10) / 10,
+      compressionDeltaDb:
+        Math.round(
+          (finalRes.klippelThermal.powerCompressionDb -
+            acousticResults.klippelThermal.powerCompressionDb) *
+            100
+        ) / 100,
+    });
+
+    const summaryBadges = actionsTaken.length > 0 ? actionsTaken.join(' • ') : 'Master Reference Verified';
     showToast(
-      `Auto-Optimized (${finalRes.netVolumeLiters}L @ ${finalRes.tuningFrequencyFb}Hz) • ${summaryBadges} • Port ${finalRes.portAirVelocityMs} m/s`,
+      `Caliber ${newScore.toFixed(1)}/100 (${finalRes.netVolumeLiters}L @ ${finalRes.tuningFrequencyFb}Hz) • ${summaryBadges} • Port ${finalRes.portAirVelocityMs} m/s`,
       6000
     );
-  }, [autoOptimizePlan, showToast]);
+  }, [acousticResults, autoOptimizePlan, showToast]);
 
-  const handleSaveCustomDriver = (driver: DriverPreset) => {
+  const handleSaveCustomDriver = (
+    driver: DriverPreset,
+    role: 'woofer' | 'midrange' | 'tweeter' = 'woofer'
+  ) => {
     setAcoustics((prev) => ({
       ...prev,
       driverAssignments: {
         ...prev.driverAssignments,
-        woofer: { ...prev.driverAssignments.woofer, driver },
+        [role]: { ...prev.driverAssignments[role], driver },
       },
     }));
+    showToast(`Saved custom ${role} transducer: [${driver.brand}] ${driver.model}`, 4500);
   };
 
   const openInspectorTab = useCallback((tab: InspectorTab) => {
@@ -758,9 +637,8 @@ export default function App() {
       }
       if (e.key === 'Escape') {
         setSelectedPartId(null);
-        setIsCutListModalOpen(false);
+        setIsPartInspectorOpen(false);
         setIsResponseChartOpen(false);
-        setIsCrossoverModalOpen(false);
         setIsCustomDriverOpen(false);
         setIsProjectManagerOpen(false);
         setIsSearchOpen(false);
@@ -933,6 +811,9 @@ export default function App() {
                     hasPendingOptimizations={autoOptimizePlan.hasPendingOptimizations}
                     pendingOptimizationReasons={autoOptimizePlan.pendingReasons}
                     onAutoOptimize={handleAutoOptimizeSystem}
+                    coOptConfig={coOptConfig}
+                    onToggleCoOpt={handleToggleCoOpt}
+                    lastCaliberDelta={lastCaliberDelta}
                   />
 
                   {/* Active 3D Viewport Mode Badges */}
@@ -1134,6 +1015,7 @@ export default function App() {
                           setAcoustics={setAcoustics}
                           crossoverResults={acousticResults.crossover}
                           firReport={acousticResults.firReport}
+                          baffleWidthMm={dimensions.externalWidthMm}
                           onOpenPcbWorkspace={() => setCrossoverSubView('pcb_stack')}
                         />
                       </div>
@@ -1169,8 +1051,11 @@ export default function App() {
                   onSwitchToPaArchitecture={() => {
                     handleSelectSubcategoryFromSearch('horn_loaded_array');
                   }}
-                  onApplyRiggingSettings={(totalMassKg, splayAngleDeg) => {
-                    showToast(`Rigging verified: ${totalMassKg.toFixed(1)}kg array load, avg splay ${splayAngleDeg.toFixed(1)}°`, 5000);
+                  onApplyRiggingSettings={(tiltDeg, boxCount, totalMassKg) => {
+                    showToast(
+                      `Rigging verified & synced: ${boxCount}-box array @ ${tiltDeg.toFixed(1)}° tilt (${totalMassKg.toFixed(1)} kg total load)`,
+                      5000
+                    );
                   }}
                 />
               )}
@@ -1266,6 +1151,9 @@ export default function App() {
               onFocusInspectorSection={handleFocusInspectorSection}
               onToggleTpmsMatrix={handleToggleTpmsMatrix}
               onCyclePortProfile={handleCyclePortProfile}
+              coOptConfig={coOptConfig}
+              onChangeCoOptConfig={setCoOptConfig}
+              lastCaliberDelta={lastCaliberDelta}
             />
           </div>
 
@@ -1350,44 +1238,6 @@ export default function App() {
             />
           )}
 
-          {isCutListModalOpen && (
-            <div
-              onClick={() => setIsCutListModalOpen(false)}
-              className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/75 backdrop-blur-none animate-in fade-in cursor-pointer"
-            >
-              <div
-                onClick={(e) => e.stopPropagation()}
-                className="relative w-full max-w-4xl max-h-[88vh] overflow-y-auto bg-slate-950 border border-slate-700 rounded-xl shadow-2xl cursor-default"
-              >
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsCutListModalOpen(false);
-                  }}
-                  title="Close Cut List (X)"
-                  className="absolute top-4 right-4 z-10 p-2 rounded-lg bg-slate-900 text-slate-400 hover:text-white hover:bg-rose-950 border border-slate-700 transition cursor-pointer"
-                >
-                  <X className="w-5 h-5 text-rose-400" />
-                </button>
-                <CutListSheet
-                  cutList={cutList}
-                  dimensions={dimensions}
-                  selectedPartId={selectedPartId}
-                  onSelectPart={(partId) => {
-                    setSelectedPartId(partId);
-                    setIsCutListModalOpen(false);
-                    setActiveWorkspace('cad_3d');
-                  }}
-                  onInspectPartSpecs={(partId) => {
-                    setSelectedPartId(partId);
-                    setIsPartInspectorOpen(true);
-                  }}
-                />
-              </div>
-            </div>
-          )}
-
           {isResponseChartOpen && (
             <div
               onClick={() => setIsResponseChartOpen(false)}
@@ -1416,44 +1266,10 @@ export default function App() {
             </div>
           )}
 
-          {isCrossoverModalOpen && (
-            <div
-              onClick={() => setIsCrossoverModalOpen(false)}
-              className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/75 backdrop-blur-none animate-in fade-in cursor-pointer"
-            >
-              <div
-                onClick={(e) => e.stopPropagation()}
-                className="relative w-full max-w-4xl max-h-[88vh] overflow-y-auto bg-slate-950 border border-slate-700 rounded-xl shadow-2xl p-2 cursor-default"
-              >
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsCrossoverModalOpen(false);
-                  }}
-                  title="Close Audio FIR & Crossover (X)"
-                  className="absolute top-4 right-4 z-10 p-2 rounded-lg bg-slate-900 text-slate-400 hover:text-white hover:bg-rose-950 border border-slate-700 transition cursor-pointer"
-                >
-                  <X className="w-5 h-5 text-rose-400" />
-                </button>
-                <CrossoverDesigner
-                  acoustics={acoustics}
-                  setAcoustics={setAcoustics}
-                  crossoverResults={acousticResults.crossover}
-                  firReport={acousticResults.firReport}
-                  onOpenPcbWorkspace={() => {
-                    setIsCrossoverModalOpen(false);
-                    setCrossoverSubView('pcb_stack');
-                    setActiveWorkspace('crossover_pcb');
-                  }}
-                />
-              </div>
-            </div>
-          )}
-
           {isCustomDriverOpen && (
             <CustomDriverModal
               currentDriver={acoustics.driverAssignments.woofer.driver}
+              driverAssignments={acoustics.driverAssignments}
               onSave={handleSaveCustomDriver}
               onClose={() => setIsCustomDriverOpen(false)}
             />

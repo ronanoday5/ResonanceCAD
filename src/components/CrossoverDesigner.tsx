@@ -43,6 +43,7 @@ interface CrossoverDesignerProps {
   setAcoustics: React.Dispatch<React.SetStateAction<AcousticParameters>>;
   crossoverResults: CrossoverNetworkResult;
   firReport?: FirSimulationReport;
+  baffleWidthMm?: number;
   onOpenPcbWorkspace?: () => void;
 }
 
@@ -51,6 +52,7 @@ export const CrossoverDesigner: React.FC<CrossoverDesignerProps> = ({
   setAcoustics,
   crossoverResults,
   firReport: initialFirReport,
+  baffleWidthMm = 330,
   onOpenPcbWorkspace,
 }) => {
   const [activeTab, setActiveTab] = useState<'fir_dsp' | 'passive_iir'>('fir_dsp');
@@ -66,6 +68,12 @@ export const CrossoverDesigner: React.FC<CrossoverDesignerProps> = ({
     lowPassType,
     highPassOrder,
     highPassType,
+    midPassOrder = 2,
+    midPassType = 'linkwitz_riley',
+    enableZobelNetwork = true,
+    enableFsNotchTank = false,
+    enableBaffleStepComp = false,
+    enableCdHornBypass = false,
     firConfig,
   } = acoustics;
 
@@ -92,16 +100,20 @@ export const CrossoverDesigner: React.FC<CrossoverDesignerProps> = ({
   const blueprintDiagnostics = useMemo(() => {
     const tw = driverAssignments.tweeter.driver;
     const wf = driverAssignments.woofer.driver;
-    const twRe = tw.reOhm || (driverAssignments.tweeter.impedanceOhm || 8) * 0.78;
+    const wfRe = wf.reOhm || (driverAssignments.woofer.impedanceOhm || 8) * 0.75;
     const motionalTank = calculateMotionalConjugate(
-      tw.fs || 900,
-      tw.qms || 3.8,
-      tw.qes || Math.max(0.25, tw.qts * 1.15),
-      twRe
+      wf.fs || 45,
+      wf.qms || 4.5,
+      wf.qes || Math.max(0.25, wf.qts * 1.1),
+      wfRe
     );
-    const lpadR1 = crossoverResults.lpadTweeter?.rSeriesOhm || 2.5;
+    const lpadR1 = crossoverResults.lpadTweeter?.rSeriesOhm || 3.3;
     const cdBypassCapUf = calculateCdHornBypassCapacitor(lpadR1, 3500);
-    const bsc = calculateBaffleStepCompensation(330, driverAssignments.woofer.impedanceOhm || 8, 6);
+    const bsc = calculateBaffleStepCompensation(
+      baffleWidthMm,
+      driverAssignments.woofer.impedanceOhm || 8,
+      4.5
+    );
     const zobelRe = wf.reOhm || (driverAssignments.woofer.impedanceOhm || 8) * 0.75;
     const zobelRz = Math.round(1.25 * zobelRe * 100) / 100;
     const zobelCz = Math.round((((wf.leMh || 0.8) * 1e-3) / (zobelRz * zobelRz)) * 1e6 * 10) / 10;
@@ -112,8 +124,9 @@ export const CrossoverDesigner: React.FC<CrossoverDesignerProps> = ({
       bsc,
       zobelRz,
       zobelCz,
+      twFs: tw.fs,
     };
-  }, [driverAssignments, crossoverResults]);
+  }, [driverAssignments, crossoverResults, baffleWidthMm]);
 
   const updateFirConfig = (updates: Partial<typeof currentFirConfig>) => {
     setAcoustics((prev) => ({
@@ -138,8 +151,13 @@ export const CrossoverDesigner: React.FC<CrossoverDesignerProps> = ({
     }));
   };
 
-  const handleDownloadTaps = (role: 'woofer' | 'tweeter') => {
-    const taps = role === 'woofer' ? firReport.wooferTaps : firReport.tweeterTaps;
+  const handleDownloadTaps = (role: 'woofer' | 'midrange' | 'tweeter') => {
+    const taps =
+      role === 'woofer'
+        ? firReport.wooferTaps
+        : role === 'midrange'
+        ? firReport.midrangeTaps || firReport.wooferTaps
+        : firReport.tweeterTaps;
     const text = formatFirTapsForExport(taps, selectedPlatform, role);
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -657,7 +675,7 @@ export const CrossoverDesigner: React.FC<CrossoverDesignerProps> = ({
             <div className="text-xs font-mono text-slate-400">
               Export coefficients for <span className="text-cyan-300 font-bold uppercase">{selectedPlatform}</span> (Target: {firReport.tapCount} taps @ {firReport.sampleRate / 1000}kHz)
             </div>
-            <div className="flex items-center gap-2 font-mono text-xs">
+            <div className="flex items-center gap-2 font-mono text-xs flex-wrap">
               <button
                 onClick={() => handleDownloadTaps('woofer')}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold transition cursor-pointer shadow"
@@ -665,6 +683,15 @@ export const CrossoverDesigner: React.FC<CrossoverDesignerProps> = ({
                 <Download className="w-3.5 h-3.5" />
                 Woofer Taps (.txt)
               </button>
+              {topology === 'three_way' && firReport.midrangeTaps && (
+                <button
+                  onClick={() => handleDownloadTaps('midrange')}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold transition cursor-pointer shadow"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Midrange Taps (.txt)
+                </button>
+              )}
               <button
                 onClick={() => handleDownloadTaps('tweeter')}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold transition cursor-pointer shadow"
@@ -677,7 +704,7 @@ export const CrossoverDesigner: React.FC<CrossoverDesignerProps> = ({
                 className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition cursor-pointer"
               >
                 <FileCode className="w-3.5 h-3.5 text-cyan-400" />
-                Stereo DSP Preset (.json)
+                {topology === 'three_way' ? '3-Way DSP Preset (.json)' : 'Stereo DSP Preset (.json)'}
               </button>
             </div>
           </div>
@@ -825,13 +852,109 @@ export const CrossoverDesigner: React.FC<CrossoverDesignerProps> = ({
                 />
               </div>
             </div>
+
+            {/* 3-Way Midrange Band-Pass Filter Card */}
+            {topology === 'three_way' && (
+              <div className="md:col-span-2 bg-slate-900/80 border border-emerald-800/70 p-3.5 rounded-lg space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-mono font-semibold text-emerald-400 uppercase tracking-wider">
+                    Midrange Band-Pass Filter ({acoustics.driverAssignments.midrange.driver.brand}{' '}
+                    {acoustics.driverAssignments.midrange.driver.model})
+                  </span>
+                  <span className="text-xs font-mono text-emerald-300 font-bold">
+                    Passband: {crossoverLowHz} Hz – {crossoverHighHz} Hz
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs font-mono">
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase block mb-1">
+                      Band-Pass Slope Order
+                    </label>
+                    <select
+                      value={midPassOrder}
+                      onChange={(e) =>
+                        setAcoustics((p) => ({
+                          ...p,
+                          midPassOrder: parseInt(e.target.value) as FilterOrder,
+                        }))
+                      }
+                      className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200"
+                    >
+                      <option value={1}>1st Order (6 dB/oct)</option>
+                      <option value={2}>2nd Order (12 dB/oct)</option>
+                      <option value={3}>3rd Order (18 dB/oct)</option>
+                      <option value={4}>4th Order (24 dB/oct)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase block mb-1">
+                      Band-Pass Alignment
+                    </label>
+                    <select
+                      value={midPassType}
+                      onChange={(e) =>
+                        setAcoustics((p) => ({
+                          ...p,
+                          midPassType: e.target.value as FilterType,
+                        }))
+                      }
+                      className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200"
+                    >
+                      <option value="linkwitz_riley">Linkwitz-Riley (Flat Sum)</option>
+                      <option value="butterworth">Butterworth (-3dB Q=0.707)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div className="flex justify-between text-xs font-mono mb-1">
+                      <span className="text-slate-400">Midrange L-Pad:</span>
+                      <span className="text-emerald-300 font-bold">
+                        {driverAssignments.midrange.attenuationDb} dB
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="12"
+                      step="0.5"
+                      value={driverAssignments.midrange.attenuationDb}
+                      onChange={(e) =>
+                        handleDriverAttenuation('midrange', parseFloat(e.target.value))
+                      }
+                      className="w-full accent-emerald-400 cursor-pointer"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Passive Loudspeaker Electronics Blueprint: Reactive Conjugate & Impedance Flattening Network */}
+          {/* Passive Loudspeaker Electronics Blueprint: Toggleable Reactive Conjugate & Impedance Flattening Networks */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5 font-mono text-xs">
-            <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-3">
-              <div className="text-[10px] text-cyan-400 uppercase font-bold mb-1">
-                1. Zobel Inductive Cell (Rz / Cz)
+            <div
+              className={`rounded-lg p-3 border transition ${
+                enableZobelNetwork
+                  ? 'bg-cyan-950/35 border-cyan-500/70'
+                  : 'bg-slate-900/80 border-slate-800'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] text-cyan-400 uppercase font-bold">
+                  1. Zobel Cell (Rz / Cz)
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAcoustics((p) => ({ ...p, enableZobelNetwork: !enableZobelNetwork }))
+                  }
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase cursor-pointer border ${
+                    enableZobelNetwork
+                      ? 'bg-cyan-500 text-slate-950 border-cyan-300'
+                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}
+                >
+                  {enableZobelNetwork ? 'IN BOM' : 'BYPASS'}
+                </button>
               </div>
               <div className="text-slate-200 font-bold">
                 Rz = {blueprintDiagnostics.zobelRz} Ω • Cz = {blueprintDiagnostics.zobelCz} µF
@@ -841,9 +964,30 @@ export const CrossoverDesigner: React.FC<CrossoverDesignerProps> = ({
               </div>
             </div>
 
-            <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-3">
-              <div className="text-[10px] text-purple-400 uppercase font-bold mb-1">
-                2. Motional Fs Conjugate Tank
+            <div
+              className={`rounded-lg p-3 border transition ${
+                enableFsNotchTank
+                  ? 'bg-purple-950/35 border-purple-500/70'
+                  : 'bg-slate-900/80 border-slate-800'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] text-purple-400 uppercase font-bold">
+                  2. Motional Fs Tank
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAcoustics((p) => ({ ...p, enableFsNotchTank: !enableFsNotchTank }))
+                  }
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase cursor-pointer border ${
+                    enableFsNotchTank
+                      ? 'bg-purple-500 text-slate-950 border-purple-300'
+                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}
+                >
+                  {enableFsNotchTank ? 'IN BOM' : 'BYPASS'}
+                </button>
               </div>
               <div className="text-slate-200 font-bold">
                 Rc={blueprintDiagnostics.motionalTank.rcOhm}Ω • Cc={blueprintDiagnostics.motionalTank.ccUf}µF • Lc={blueprintDiagnostics.motionalTank.lcMh}mH
@@ -853,9 +997,30 @@ export const CrossoverDesigner: React.FC<CrossoverDesignerProps> = ({
               </div>
             </div>
 
-            <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-3">
-              <div className="text-[10px] text-amber-400 uppercase font-bold mb-1">
-                3. CD Horn HF Bypass Cap (Cb)
+            <div
+              className={`rounded-lg p-3 border transition ${
+                enableCdHornBypass
+                  ? 'bg-amber-950/35 border-amber-500/70'
+                  : 'bg-slate-900/80 border-slate-800'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] text-amber-400 uppercase font-bold">
+                  3. CD Horn Bypass (Cb)
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAcoustics((p) => ({ ...p, enableCdHornBypass: !enableCdHornBypass }))
+                  }
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase cursor-pointer border ${
+                    enableCdHornBypass
+                      ? 'bg-amber-500 text-slate-950 border-amber-300'
+                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}
+                >
+                  {enableCdHornBypass ? 'IN BOM' : 'BYPASS'}
+                </button>
               </div>
               <div className="text-slate-200 font-bold">
                 Cb = {blueprintDiagnostics.cdBypassCapUf} µF (400V MKP)
@@ -865,15 +1030,36 @@ export const CrossoverDesigner: React.FC<CrossoverDesignerProps> = ({
               </div>
             </div>
 
-            <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-3">
-              <div className="text-[10px] text-emerald-400 uppercase font-bold mb-1">
-                4. Baffle Step Shelf (2π → 4π)
+            <div
+              className={`rounded-lg p-3 border transition ${
+                enableBaffleStepComp
+                  ? 'bg-emerald-950/35 border-emerald-500/70'
+                  : 'bg-slate-900/80 border-slate-800'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] text-emerald-400 uppercase font-bold">
+                  4. Baffle Step ({baffleWidthMm}mm)
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAcoustics((p) => ({ ...p, enableBaffleStepComp: !enableBaffleStepComp }))
+                  }
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase cursor-pointer border ${
+                    enableBaffleStepComp
+                      ? 'bg-emerald-500 text-slate-950 border-emerald-300'
+                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}
+                >
+                  {enableBaffleStepComp ? 'IN BOM' : 'BYPASS'}
+                </button>
               </div>
               <div className="text-slate-200 font-bold">
                 Lbsc = {blueprintDiagnostics.bsc.lBscMh} mH • Rbsc = {blueprintDiagnostics.bsc.rBscOhm} Ω
               </div>
               <div className="text-[10px] text-slate-400 mt-1">
-                6 dB diffraction compensation centered at f_step = {blueprintDiagnostics.bsc.fStepHz} Hz
+                4.5 dB diffraction shelf centered at f_step = {blueprintDiagnostics.bsc.fStepHz} Hz
               </div>
             </div>
           </div>

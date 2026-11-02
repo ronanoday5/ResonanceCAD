@@ -24,6 +24,8 @@ import {
   type MaterialType,
   type OblateSpheroidalWaveguideConfig,
   type PortCatalogMatch,
+  type ProceduralDiffuserConfig,
+  type ProceduralDiffuserReport,
   type SpeakerCategory,
   type SpeakerCategorySpec,
   type SpeakerSubcategory,
@@ -32,6 +34,10 @@ import {
   type StandingWaveReport,
   type SurfaceFinishSpec,
   type SurfaceFinishType,
+  type ThermalVentilationReport,
+  type ThermalVentSlotPlacement,
+  type SpeakerCaliberReport,
+  type SpeakerCaliberGrade,
 } from '../types/loudspeaker.ts';
 import { calculateCrossoverNetwork } from './crossoverEngine.ts';
 import { computeBaffleLayout } from './baffleLayoutEngine.ts';
@@ -40,6 +46,7 @@ import { calculateSpeakonReport } from './speakonEngine.ts';
 import { synthesizeParametricPort } from './parametricPortEngine.ts';
 import { calculateAdditiveAcoustics } from './additiveAcousticEngine.ts';
 import { calculateSystemImpedance } from './impedanceParser.ts';
+import { calculateMultiphysicsBlueprint } from './multiphysicsBlueprintEngine.ts';
 
 export const MATERIAL_SPECS: Record<MaterialType, MaterialSpec> = {
   baltic_birch_18: {
@@ -194,6 +201,23 @@ export const MATERIAL_SPECS: Record<MaterialType, MaterialSpec> = {
     roughness: 0.38,
     badge: 'CFRP 18mm: 56 GPa Reference Monocoque',
     description: 'Ultra-rigid 18mm carbon fiber composite sandwich with viscoelastic Rohacell PMI structural foam core for zero cabinet coloration.',
+  },
+  aluminum_6061: {
+    id: 'aluminum_6061',
+    name: '6061-T6 Billet Aluminum (Ultra-Rigid)',
+    category: 'sheet_goods',
+    subGroup: 'aluminum_billet',
+    nominalThicknessMm: 15,
+    densityKgM3: 2700,
+    defaultCostPerM2: 340.0,
+    flexuralModulusGpa: 68.9,
+    poissonRatio: 0.33,
+    tensileStrengthMpa: 310,
+    dampingFactor: 0.018,
+    textureColor: '#94a3b8',
+    roughness: 0.25,
+    badge: '6061-T6 Billet: 68.9 GPa Monoblock',
+    description: 'CNC-machined 6061-T6 billet aluminum monocoque with extreme 68.9 GPa Young\'s modulus for studio monitors and zero-flex subwoofers.',
   },
   pa12_cf: {
     id: 'pa12_cf',
@@ -1257,7 +1281,26 @@ export function calculateAcoustics(
   const additiveAcousticReport = calculateAdditiveAcoustics(dimensions, acousticParams);
   const matrixDisplacedL = additiveAcousticReport.enabled ? additiveAcousticReport.displacedSolidVolumeLiters : 0;
 
-  let estNetVb = grossVolumeLiters - driverDisplacementLiters - bracingDisplacementLiters - midrangeChamberVolumeLiters - plateAmpDisplacementLiters - matrixDisplacedL;
+  const standingWavesPre = calculateStandingWaves(dimensions, acousticParams);
+  const diffuserReport = calculateProceduralDiffuser(dimensions, acousticParams, standingWavesPre);
+  const diffuserDisplacedL = diffuserReport.enabled ? diffuserReport.displacedVolumeLiters : 0;
+
+  // Parametric Rear-Panel Thermal Ventilation Report & Internal Finned Collector Displacement
+  const thermalVentReport = calculateThermalVentilationReport(dimensions, acousticParams);
+  const thermalExchangerDisplacedL =
+    thermalVentReport.enabled && thermalVentReport.hasInternalHermeticHeatExchanger
+      ? Math.round((0.28 + thermalVentReport.slotCount * 0.045) * 100) / 100
+      : 0;
+
+  let estNetVb =
+    grossVolumeLiters -
+    driverDisplacementLiters -
+    bracingDisplacementLiters -
+    midrangeChamberVolumeLiters -
+    plateAmpDisplacementLiters -
+    matrixDisplacedL -
+    diffuserDisplacedL -
+    thermalExchangerDisplacedL;
   if (estNetVb <= 1) estNetVb = 1;
 
   // Synthesize Custom Parametric Port (100% procedural, zero COTS dependencies)
@@ -1368,21 +1411,30 @@ export function calculateAcoustics(
     totalDryWeightKg: totalWeightKg,
   };
 
-  // Crossover
-  const crossover = calculateCrossoverNetwork(acousticParams);
+  // Crossover (passing live externalWidthMm for accurate Baffle Step Compensation)
+  const crossover = calculateCrossoverNetwork(acousticParams, dimensions.externalWidthMm);
 
   // Multi-band frequency response curves
   const freqResponse = generateMultiBandFrequencyCurve(alignment, acousticParams, effectiveAcousticVolumeLiters, activeFb, calculatedQtc, portAirVelocityMs);
 
-  const standingWaves = calculateStandingWaves(dimensions, acousticParams);
+  const standingWaves = standingWavesPre;
   if (additiveAcousticReport.enabled) {
     standingWaves.standingWaveRiskLevel = 'low';
     standingWaves.diffuserActive = true;
     standingWaves.diffuserAttenuationDb = additiveAcousticReport.standingWaveMitigationDb;
+  } else if (diffuserReport.enabled) {
+    standingWaves.standingWaveRiskLevel = 'low';
+    standingWaves.diffuserActive = true;
+    standingWaves.diffuserAttenuatedPeakHz = diffuserReport.primaryAttenuatedModeHz;
+    standingWaves.diffuserAttenuationDb = diffuserReport.primaryAttenuationDb;
   }
 
-  // Thermal & Large Signal Metrics
-  const klippelThermal = calculateKlippelThermalShift(wooferSingle, acousticParams.thermalDriveLevel);
+  // Thermal & Large Signal Metrics (coupled to rear-panel convective thermal ventilation)
+  const klippelThermal = calculateKlippelThermalShift(
+    wooferSingle,
+    acousticParams.thermalDriveLevel,
+    thermalVentReport
+  );
   const maxContinuousPowerW = Math.round(wooferSingle.pe * wooferQuantity);
   const powerCompressionDb = klippelThermal.powerCompressionDb;
   const totalSensitivityDb = wooferSingle.splSensitivityDb + (wooferQuantity > 1 ? 3 : 0);
@@ -1448,12 +1500,18 @@ export function calculateAcoustics(
     combinedVdCm3: Math.round(wooferSingle.sd * wooferQuantity * wooferSingle.xmax * 10) / 10,
     isDualWoofer: wooferQuantity === 2,
     isCoaxial: !!subcatConfig.isCoaxial,
-    isBandpass: !!subcatConfig.isBandpass,
+    isBandpass: alignment === 'bandpass4' || !!subcatConfig.isBandpass,
     hasPlateAmplifier: !!subcatConfig.hasPlateAmplifier,
     plateAmpDisplacementLiters: subcatConfig.hasPlateAmplifier ? subcatConfig.commercialPlateAmp?.displacementLiters : undefined,
     plateAmpContinuousPowerW: subcatConfig.hasPlateAmplifier ? subcatConfig.commercialPlateAmp?.powerRmsW : undefined,
-    bandpassFrontVbLiters: subcatConfig.bandpassFrontVbLiters,
-    bandpassRearVbLiters: subcatConfig.bandpassRearVbLiters,
+    bandpassFrontVbLiters:
+      acousticParams.bandpassFrontVbLiters ??
+      subcatConfig.bandpassFrontVbLiters ??
+      Math.round(netVolumeLiters * 0.35 * 10) / 10,
+    bandpassRearVbLiters:
+      acousticParams.bandpassRearVbLiters ??
+      subcatConfig.bandpassRearVbLiters ??
+      Math.round(netVolumeLiters * 0.65 * 10) / 10,
   };
 
   const driverCompatibility = validateDriverCompatibility(wooferSingle, activeCategory, activeSubcat);
@@ -1488,7 +1546,16 @@ export function calculateAcoustics(
     wooferSingle
   );
 
-  return {
+  const multiphysicsBlueprint = calculateMultiphysicsBlueprint(
+    dimensions,
+    acousticParams,
+    netVolumeLiters,
+    activeFb,
+    Math.round(portLengthMm),
+    parametricPort
+  );
+
+    const baseResult: AcousticCalculationResult = {
     netVolumeLiters: Math.round(netVolumeLiters * 10) / 10,
     grossInternalVolumeLiters: Math.round(grossVolumeLiters * 10) / 10,
     driverDisplacementLiters: Math.round(driverDisplacementLiters * 10) / 10,
@@ -1542,9 +1609,15 @@ export function calculateAcoustics(
     driverCompatibility,
     firReport: calculateFirSimulation(acousticParams),
     speakonReport,
+    diffuserReport,
     additiveAcousticReport,
     systemImpedance,
+    multiphysicsBlueprint,
+    thermalVentReport,
   };
+
+  baseResult.caliberReport = evaluateSpeakerCaliber(dimensions, acousticParams, baseResult);
+  return baseResult;
 }
 
 /**
@@ -2058,16 +2131,195 @@ function calculateGroupDelay(
 }
 
 /**
+ * Parametric Rear-Panel Thermal Ventilation Slot Synthesizer
+ * Scales CNC rear-panel convective intake/exhaust slots, net free ventilation area,
+ * buoyancy stack velocity, and voice-coil thermal compression relief directly from
+ * the transducer's continuous RMS power rating (Pe * quantity).
+ */
+export function calculateThermalVentilationReport(
+  dimensions: EnclosureDimensions,
+  acoustics: AcousticParameters
+): ThermalVentilationReport {
+  const wooferAssign = acoustics.driverAssignments.woofer;
+  const woofer = wooferAssign.driver;
+  const wooferQty = Math.max(1, wooferAssign.quantity || (acoustics.topology === 'mtm' ? 2 : 1));
+  const tweeterPe = acoustics.topology !== 'single' ? (acoustics.driverAssignments.tweeter.driver.pe || 40) * 0.2 : 0;
+  const midPe = acoustics.topology === 'three_way' ? (acoustics.driverAssignments.midrange.driver.pe || 80) * 0.3 : 0;
+
+  const driverContinuousPowerW = Math.round(woofer.pe * wooferQty + tweeterPe + midPe);
+  // ~96% of electrical input power in an electrodynamic transducer converts into voice-coil & motor Joule heat
+  const thermalDissipationLoadW = Math.round(driverContinuousPowerW * 0.96);
+
+  const cfg = dimensions.thermalVentConfig || {};
+  const enabled = Boolean(
+    cfg.enabled !== undefined
+      ? cfg.enabled
+      : dimensions.hardware?.showThermalVentSlots
+  );
+  const sizingMode = cfg.sizingMode || 'auto_driver_pe';
+  const pattern = cfg.pattern || 'convective_dual_bank';
+  const hasInternalHermeticHeatExchanger = cfg.hasInternalHermeticHeatExchanger ?? true;
+
+  // Determine Power Tier & Auto-Scaled Slot Parameters from driverContinuousPowerW
+  let powerTier: ThermalVentilationReport['powerTier'] = 'compact_low_power';
+  let powerTierLabel = 'Tier 1: Compact Nearfield (≤ 180W RMS)';
+  let autoSlotCount = 4;
+  let autoSlotWidthMm = 48;
+  let autoSlotHeightMm = 6;
+
+  if (driverContinuousPowerW > 950) {
+    powerTier = 'touring_extreme_power';
+    powerTierLabel = 'Tier 4: Concert Touring Extreme (> 950W RMS)';
+    autoSlotCount = 12;
+    autoSlotWidthMm = 94;
+    autoSlotHeightMm = 9;
+  } else if (driverContinuousPowerW > 450) {
+    powerTier = 'pro_high_power';
+    powerTierLabel = 'Tier 3: High-Power Pro PA (451–950W RMS)';
+    autoSlotCount = 8;
+    autoSlotWidthMm = 78;
+    autoSlotHeightMm = 8;
+  } else if (driverContinuousPowerW > 180) {
+    powerTier = 'studio_mid_power';
+    powerTierLabel = 'Tier 2: Mid-Power Reference (181–450W RMS)';
+    autoSlotCount = 6;
+    autoSlotWidthMm = 62;
+    autoSlotHeightMm = 7;
+  }
+
+  const wallTMm = MATERIAL_SPECS[dimensions.material]?.nominalThicknessMm || 18;
+  const rearWMm = Math.max(80, dimensions.externalWidthMm - 2 * wallTMm);
+  const rearHMm = Math.max(100, dimensions.externalHeightMm - 2 * wallTMm);
+
+  const rawSlotCount = sizingMode === 'manual' && cfg.manualSlotCount ? cfg.manualSlotCount : autoSlotCount;
+  // Ensure even slot count (split evenly between lower cool-air intake bank and upper hot-air exhaust bank)
+  const slotCount = Math.max(2, Math.min(16, Math.round(rawSlotCount / 2) * 2));
+  const intakeSlotCount = Math.floor(slotCount / 2);
+  const exhaustSlotCount = slotCount - intakeSlotCount;
+
+  const maxAllowedSlotWMm = Math.max(32, Math.round(rearWMm * 0.42));
+  const rawSlotWMm = sizingMode === 'manual' && cfg.manualSlotWidthMm ? cfg.manualSlotWidthMm : autoSlotWidthMm;
+  const slotWidthMm = Math.max(28, Math.min(maxAllowedSlotWMm, Math.round(rawSlotWMm)));
+
+  const rawSlotHMm = sizingMode === 'manual' && cfg.manualSlotHeightMm ? cfg.manualSlotHeightMm : autoSlotHeightMm;
+  const slotHeightMm = Math.max(4, Math.min(14, Math.round(rawSlotHMm)));
+  const slotCornerRadiusMm = Math.round((slotHeightMm / 2) * 10) / 10;
+  const slotPitchMm = Math.round((slotHeightMm + 5.5) * 10) / 10;
+
+  // Single stadium slot area: W * H - (4 - pi) * r^2
+  const singleSlotAreaMm2 =
+    slotWidthMm * slotHeightMm - (4 - Math.PI) * slotCornerRadiusMm * slotCornerRadiusMm;
+  const meshOpenFactor = 0.82; // 82% open perforated debris screen
+  const totalNetFreeAreaCm2 =
+    Math.round(((singleSlotAreaMm2 * slotCount * meshOpenFactor) / 100) * 100) / 100;
+
+  // Natural stack buoyancy velocity: v_buoy = C_d * sqrt(2 * g * H_stack * (Delta_T / T_amb))
+  const stackHeightM = Math.max(0.12, (rearHMm * 0.62) * 1e-3);
+  const deltaTPlenumK = Math.min(48, 12 + driverContinuousPowerW * 0.025);
+  const cdDischarge = 0.65;
+  const rawBuoyancyVelMs =
+    cdDischarge * Math.sqrt(2 * 9.81 * stackHeightM * (deltaTPlenumK / 293.15));
+  // Coupled acoustic oscillating pump boost from woofer back-wave agitation across internal heat exchanger
+  const buoyancyAirflowVelocityMs = Math.round((rawBuoyancyVelMs * 1.45) * 100) / 100;
+
+  // Required minimum free vent area for target thermal dissipation
+  const requiredMinFreeAreaCm2 =
+    Math.round((thermalDissipationLoadW / Math.max(15, 18.5 * buoyancyAirflowVelocityMs)) * 10) / 10;
+
+  // Convective volume flow rate (L/s) through intake -> exhaust chimney
+  const intakeAreaM2 = ((totalNetFreeAreaCm2 / 2) * 1e-4);
+  const convectiveVolumeFlowLs = enabled
+    ? Math.round(intakeAreaM2 * buoyancyAirflowVelocityMs * 1000 * 100) / 100
+    : 0;
+
+  // Voice-coil steady-state temperature reduction (deg C) & power compression saved (dB)
+  const areaCoverageRatio = Math.min(1.35, totalNetFreeAreaCm2 / Math.max(1.5, requiredMinFreeAreaCm2));
+  const voiceCoilTempDropC = enabled
+    ? Math.round((14 + Math.min(18, driverContinuousPowerW * 0.012)) * areaCoverageRatio * 10) / 10
+    : 0;
+  const alpha0 = 0.00393;
+  const powerCompressionSavedDb = enabled
+    ? Math.round(20 * Math.log10(1 + alpha0 * voiceCoilTempDropC) * 100) / 100
+    : 0;
+
+  const bankEnvelopeWidthMm = slotWidthMm + 16;
+  const bankEnvelopeHeightMm = Math.round(intakeSlotCount * slotPitchMm + 12);
+
+  // Build individual slot coordinate list relative to each bank center
+  const slots: ThermalVentSlotPlacement[] = [];
+  for (let i = 0; i < intakeSlotCount; i++) {
+    const localY = (i - (intakeSlotCount - 1) / 2) * slotPitchMm;
+    slots.push({
+      slotIndex: i + 1,
+      role: 'intake_lower',
+      xMm: 0,
+      yMm: Math.round((-rearHMm * 0.30 + localY) * 10) / 10,
+      widthMm: slotWidthMm,
+      heightMm: slotHeightMm,
+      cornerRadiusMm: slotCornerRadiusMm,
+    });
+  }
+  for (let i = 0; i < exhaustSlotCount; i++) {
+    const localY = (i - (exhaustSlotCount - 1) / 2) * slotPitchMm;
+    slots.push({
+      slotIndex: intakeSlotCount + i + 1,
+      role: 'exhaust_upper',
+      xMm: 0,
+      yMm: Math.round((rearHMm * 0.30 + localY) * 10) / 10,
+      widthMm: slotWidthMm,
+      heightMm: slotHeightMm,
+      cornerRadiusMm: slotCornerRadiusMm,
+    });
+  }
+
+  return {
+    enabled,
+    sizingMode,
+    pattern,
+    driverContinuousPowerW,
+    thermalDissipationLoadW,
+    powerTier,
+    powerTierLabel,
+    slotCount,
+    intakeSlotCount,
+    exhaustSlotCount,
+    slotWidthMm,
+    slotHeightMm,
+    slotCornerRadiusMm,
+    slotPitchMm,
+    totalNetFreeAreaCm2,
+    requiredMinFreeAreaCm2,
+    buoyancyAirflowVelocityMs,
+    convectiveVolumeFlowLs,
+    voiceCoilTempDropC,
+    powerCompressionSavedDb,
+    hasInternalHermeticHeatExchanger,
+    hermeticSealDescription: hasInternalHermeticHeatExchanger
+      ? 'Internal Hermetic Finned Aluminum Convective Chimney (100% Acoustic Box Seal Preserved)'
+      : 'Direct Acoustic Relief Louvers (Open Rear Convective Venting)',
+    bankEnvelopeWidthMm,
+    bankEnvelopeHeightMm,
+    slots,
+  };
+}
+
+/**
  * Klippel Large-Signal State-Space & Thermal Power Compression Engine
  * Models Re(Tv) resistance rise, power compression Delta L_pc, and dynamic Qes/Qts/Fs shifts
  */
 function calculateKlippelThermalShift(
   driver: DriverPreset,
-  driveLevel: 'small_signal' | 'nominal_aes' | 'max_continuous' = 'small_signal'
+  driveLevel: 'small_signal' | 'nominal_aes' | 'max_continuous' = 'small_signal',
+  thermalVentReport?: ThermalVentilationReport
 ): KlippelThermalReport {
   const ambientTempC = 20;
-  const tempRiseC = driveLevel === 'max_continuous' ? 135 : driveLevel === 'nominal_aes' ? 75 : 0;
-  const voiceCoilTempC = ambientTempC + tempRiseC;
+  const rawTempRiseC = driveLevel === 'max_continuous' ? 135 : driveLevel === 'nominal_aes' ? 75 : 0;
+  const ventCoolingDropC =
+    thermalVentReport?.enabled && rawTempRiseC > 0
+      ? Math.min(rawTempRiseC * 0.32, thermalVentReport.voiceCoilTempDropC * (driveLevel === 'max_continuous' ? 1.0 : 0.65))
+      : 0;
+  const tempRiseC = Math.round(Math.max(0, rawTempRiseC - ventCoolingDropC) * 10) / 10;
+  const voiceCoilTempC = Math.round((ambientTempC + tempRiseC) * 10) / 10;
 
   // Temperature coefficient of resistance for copper: alpha_0 = 0.00393 K^-1
   const alpha0 = 0.00393;
@@ -2238,10 +2490,15 @@ function calculateEnclosureMechanics(
   const bracedF11 = plateConst * (2 / (bracedSpanM * bracedSpanM)) * Math.sqrt(youngsModulusPa / Math.max(100, effectiveDensityKgM3));
   const bracedPanelModeHz = Math.round(bracedF11);
 
-  // Diagnostic warning for thin 3D printed panel walls
+  // Diagnostic warning for thin 3D printed panel walls or low perimeter/infill compliance
   let wallComplianceWarning: string | undefined = undefined;
-  if (isFilament && (dimensions.baffleThicknessMm || 18) < 15) {
-    wallComplianceWarning = 'Warning: 3D printed panel wall thickness < 15mm will induce flexural compliance bass losses under peak SPL enclosure pressure.';
+  const perimeters = dimensions.perimeterShells ?? 6;
+  if (isFilament) {
+    if ((dimensions.baffleThicknessMm || 18) < 15) {
+      wallComplianceWarning = 'Warning: 3D printed panel wall thickness < 15mm will induce flexural compliance bass losses under peak SPL enclosure pressure.';
+    } else if (perimeters < 4 || infill < 25) {
+      wallComplianceWarning = `Warning: Low slicer shell density (${perimeters} perimeters, ${infill}% infill) compromises acoustic airtightness and flexural stiffness. Use ≥ 5 perimeters and ≥ 35% Gyroid infill.`;
+    }
   }
 
   // Spool calculation
@@ -2463,3 +2720,402 @@ export function calculateDampingAdvisor(
     alternatives,
   };
 }
+
+export const DEFAULT_PROCEDURAL_DIFFUSER_CONFIG: ProceduralDiffuserConfig = {
+  enabled: false,
+  type: 'qrd_1d',
+  targetWall: 'rear',
+  primeN: 13,
+  designFreqHz: 1200,
+  wellWidthMm: 22,
+  finThicknessMm: 2.5,
+  materialType: 'petg_cf',
+};
+
+/**
+ * Synthesizes a Schroeder Quadratic Residue Diffuser (QRD 1D: s_n = n^2 mod N)
+ * or 2D Primitive Root / Skyline Diffuser (s_{n,m} = (n^2 + m^2) mod N)
+ * to scatter internal standing waves without sacrificing bass reflex airflow.
+ */
+export function calculateProceduralDiffuser(
+  dimensions: EnclosureDimensions,
+  acoustics: AcousticParameters,
+  standingWaves: StandingWaveReport
+): ProceduralDiffuserReport {
+  const cfg: ProceduralDiffuserConfig = {
+    ...DEFAULT_PROCEDURAL_DIFFUSER_CONFIG,
+    ...(dimensions.diffuserConfig || {}),
+    ...(acoustics.diffuserConfig || {}),
+  };
+
+  const wallT = dimensions.baffleThicknessMm || 18;
+  const intW = Math.max(80, dimensions.externalWidthMm - 2 * wallT);
+  const intH = Math.max(80, dimensions.externalHeightMm - 2 * wallT);
+  const intD = Math.max(80, dimensions.externalDepthMm - 2 * wallT);
+
+  const N = cfg.primeN || 13;
+  const designF = Math.max(400, Math.min(4000, cfg.designFreqHz || standingWaves.axialDepthHz || 1200));
+  const cMmS = 343000;
+  const designLambdaMm = cMmS / designF;
+
+  // Maximum theoretical Schroeder well depth d_max = ((N - 1) / N) * (lambda_0 / 2)
+  // Clamped safely to <= 28% of internal cabinet depth so it never collides with the woofer magnet
+  const rawMaxDepthMm = ((N - 1) / N) * (designLambdaMm / 2);
+  const maxWellDepthMm = Math.round(Math.min(intD * 0.28, Math.max(18, rawMaxDepthMm)) * 10) / 10;
+
+  const wellDepthsMm: number[] = [];
+  for (let n = 0; n < N; n++) {
+    const seq = (n * n) % N;
+    const dMm = Math.round(((seq / N) * maxWellDepthMm) * 10) / 10;
+    wellDepthsMm.push(dMm);
+  }
+
+  let skylineMatrixMm: number[][] | undefined = undefined;
+  if (cfg.type === 'skyline_2d') {
+    skylineMatrixMm = [];
+    for (let r = 0; r < N; r++) {
+      const row: number[] = [];
+      for (let c = 0; c < N; c++) {
+        const seq = (r * r + c * c) % N;
+        row.push(Math.round(((seq / N) * maxWellDepthMm) * 10) / 10);
+      }
+      skylineMatrixMm.push(row);
+    }
+  }
+
+  const lowCutoffFreqHz = Math.round(cMmS / (2 * Math.max(15, maxWellDepthMm)));
+  const highCutoffFreqHz = Math.round(cMmS / (2 * Math.max(8, cfg.wellWidthMm)));
+  const bandwidthOctaves = Math.round(Math.max(0.5, Math.log2(highCutoffFreqHz / Math.max(100, lowCutoffFreqHz))) * 10) / 10;
+
+  const diffusionCoefficientMid = cfg.type === 'skyline_2d' ? 0.78 : 0.69;
+  const scatteringCoefficientMid = cfg.type === 'skyline_2d' ? 0.86 : 0.76;
+  const backWaveAbsorptionGainDb = cfg.type === 'skyline_2d' ? 8.4 : 6.8;
+
+  const totalCoveredWalls =
+    cfg.targetWall === 'rear' ? 1 : cfg.targetWall === 'sides' || cfg.targetWall === 'top_bottom' ? 2 : 5;
+
+  const panelWidthMm = Math.round(intW * 0.82);
+  const panelHeightMm = Math.round(intH * 0.76);
+  const avgDepthMm = maxWellDepthMm * 0.48;
+
+  const singleWallVolLiters = (panelWidthMm * panelHeightMm * avgDepthMm) * 1e-6;
+  const displacedVolumeLiters = cfg.enabled
+    ? Math.round(singleWallVolLiters * totalCoveredWalls * 0.42 * 100) / 100
+    : 0;
+
+  const matMap: Record<ProceduralDiffuserConfig['materialType'], { name: string; density: number }> = {
+    petg_cf: { name: 'Carbon-Fiber PETG (PETG-CF)', density: 1250 },
+    pla_cf: { name: 'Carbon-Fiber PLA (PLA-CF)', density: 1240 },
+    mdf_wood: { name: 'CNC Milled HDF/Birch', density: 750 },
+    rigid_pu_resin: { name: 'Cast Rigid Polyurethane Resin', density: 1180 },
+  };
+  const matInfo = matMap[cfg.materialType] || matMap.petg_cf;
+  const totalMassKg = Math.round(displacedVolumeLiters * 1e-3 * matInfo.density * 100) / 100;
+
+  const wooferDepthMm = acoustics.driverAssignments.woofer.driver.mountingDepthMm || 110;
+  const clearanceToDriverMagnetMm = Math.round(intD - wooferDepthMm - maxWellDepthMm);
+  const hasMagnetClash = clearanceToDriverMagnetMm < 15;
+
+  const targetedModes = standingWaves.eigenmodes.slice(0, 3).map((m) => ({
+    axis: m.axis,
+    harmonicModeHz: m.frequencyHz,
+    rawQ: m.severity === 'high' ? 14.5 : 9.2,
+    dampedQ: m.severity === 'high' ? 4.2 : 3.1,
+    attenuationDb: cfg.type === 'skyline_2d' ? -8.4 : -6.8,
+    mitigationStatus: (m.frequencyHz >= lowCutoffFreqHz * 0.7 ? 'suppressed' : 'diffused') as
+      | 'suppressed'
+      | 'diffused'
+      | 'unaffected',
+  }));
+
+  const recommendations: string[] = [
+    `Schroeder Prime N=${N} ${cfg.type === 'skyline_2d' ? '2D Hemispherical Skyline' : '1D Quadratic Residue'} array scatters specular rear-wall reflections across ${lowCutoffFreqHz} Hz – ${highCutoffFreqHz} Hz (${bandwidthOctaves} octaves).`,
+    `Attenuates primary axial standing wave (${standingWaves.axialDepthHz} Hz) by ${backWaveAbsorptionGainDb} dB without restricting bass-reflex port air velocity.`,
+  ];
+  if (hasMagnetClash) {
+    recommendations.push(
+      `Caution: Only ${clearanceToDriverMagnetMm}mm clearance between diffuser wells and woofer magnet. Increase cabinet depth or raise design frequency.`
+    );
+  }
+
+  return {
+    enabled: cfg.enabled,
+    type: cfg.type,
+    typeLabel: cfg.type === 'skyline_2d' ? `2D Skyline Primitive Root (N=${N}×${N})` : `1D Schroeder QRD Array (N=${N})`,
+    targetWall: cfg.targetWall,
+    targetWallLabel:
+      cfg.targetWall === 'rear'
+        ? 'Rear Wall Behind Woofer'
+        : cfg.targetWall === 'sides'
+        ? 'Left & Right Side Walls'
+        : cfg.targetWall === 'top_bottom'
+        ? 'Top & Bottom Panels'
+        : 'Full 5-Wall Anechoic Array',
+    primeN: N,
+    designFreqHz: designF,
+    lowCutoffFreqHz,
+    highCutoffFreqHz,
+    bandwidthOctaves,
+    diffusionCoefficientMid,
+    scatteringCoefficientMid,
+    backWaveAbsorptionGainDb,
+    primaryAttenuatedModeHz: standingWaves.axialDepthHz,
+    primaryAttenuationDb: -backWaveAbsorptionGainDb,
+    targetedModes,
+    maxWellDepthMm,
+    wellDepthsMm,
+    skylineMatrixMm,
+    totalCoveredWalls,
+    panelWidthMm,
+    panelHeightMm,
+    wellWidthMm: cfg.wellWidthMm,
+    finThicknessMm: cfg.finThicknessMm,
+    displacedVolumeLiters,
+    totalMassKg,
+    materialName: matInfo.name,
+    materialDensityKgM3: matInfo.density,
+    clearanceToDriverMagnetMm,
+    hasMagnetClash,
+    recommendations,
+  };
+}
+
+/**
+ * Physics-Weighted Reference Caliber Evaluator (0–100 Master Reference Index)
+ * Synthesizes 6 coupled electro-acoustic, aero-acoustic, thermal, structural,
+ * wavefront diffraction, and crossover linearity sub-scores into a single deterministic metric.
+ */
+export function evaluateSpeakerCaliber(
+  dimensions: EnclosureDimensions,
+  acoustics: AcousticParameters,
+  results: AcousticCalculationResult
+): SpeakerCaliberReport {
+  const woofer = acoustics.driverAssignments.woofer.driver;
+  const wooferQty =
+    dimensions.subcategory === 'dual_18_reflex'
+      ? 2
+      : acoustics.topology === 'mtm'
+      ? 2
+      : acoustics.driverAssignments.woofer.quantity || 1;
+
+  const optimal = calculateOptimalAlignment(woofer, acoustics.alignment);
+  const vbTargetLiters = Math.round(optimal.optimalVbLiters * wooferQty * 10) / 10;
+  const vbDiffL = Math.abs(results.netVolumeLiters - vbTargetLiters);
+  const vbDeviationPercent = Math.round((vbDiffL / Math.max(1, vbTargetLiters)) * 1000) / 10;
+
+  const fbTargetHz = optimal.optimalFbHz;
+  const fbDeviationHz =
+    acoustics.alignment === 'ported'
+      ? Math.round(Math.abs(results.tuningFrequencyFb - fbTargetHz) * 10) / 10
+      : Math.round(Math.abs(results.boxQtc - optimal.targetQtc) * 100);
+
+  const activeImprovements: string[] = [];
+  const limitingFactors: string[] = [];
+
+  // 1. Thiele-Small Alignment Fidelity (0-100)
+  let alignmentScore = 100;
+  if (vbDeviationPercent > 5) {
+    alignmentScore -= Math.min(35, (vbDeviationPercent - 5) * 0.85);
+  }
+  if (acoustics.alignment === 'ported') {
+    if (fbDeviationHz > 1.5) {
+      alignmentScore -= Math.min(25, (fbDeviationHz - 1.5) * 3.0);
+    }
+  } else {
+    const qtcDiff = Math.abs(results.boxQtc - optimal.targetQtc);
+    if (qtcDiff > 0.04) {
+      alignmentScore -= Math.min(25, (qtcDiff - 0.04) * 110);
+    }
+  }
+  if (results.driverCompatibility?.status === 'incompatible') {
+    alignmentScore -= 28;
+    limitingFactors.push('Transducer / archetype mismatch');
+  } else if (results.driverCompatibility?.status === 'suboptimal') {
+    alignmentScore -= 10;
+  } else {
+    activeImprovements.push(`Matched ${woofer.brand} ${woofer.model} (${results.netVolumeLiters}L)`);
+  }
+  alignmentScore = Math.max(25, Math.min(100, Math.round(alignmentScore * 10) / 10));
+
+  // 2. Aero-Acoustic Laminar Port & Karal-Fok Relief (0-100)
+  const catSpec = CATEGORY_SPECS[dimensions.category || 'studio_monitor'] || CATEGORY_SPECS.studio_monitor;
+  const maxVel = catSpec.maxRecommendedPortVelocityMs || 14;
+  let aeroPortScore = 100;
+  if (acoustics.alignment !== 'sealed') {
+    const velRatio = results.portAirVelocityMs / Math.max(1, maxVel);
+    if (results.isChuffingRisk || velRatio > 1.0) {
+      aeroPortScore -= Math.min(48, 18 + (velRatio - 1.0) * 55);
+      limitingFactors.push(`Port turbulence risk (${results.portAirVelocityMs} m/s > ${maxVel} m/s)`);
+    } else if (velRatio > 0.85) {
+      aeroPortScore -= (velRatio - 0.85) * 40;
+    } else {
+      activeImprovements.push(`Laminar port flow (${results.portAirVelocityMs} m/s, Mach ${(results.portAirVelocityMs / 343).toFixed(3)})`);
+    }
+    if ((acoustics.flareRadiusMm || 0) >= 15 || (acoustics.slotLipRadiusMm || 0) >= 14) {
+      aeroPortScore = Math.min(100, aeroPortScore + 3);
+    }
+    if (results.layout?.airflowInterference?.hasInterference) {
+      aeroPortScore -= 15;
+      limitingFactors.push('Internal port intake clearance restriction');
+    }
+  } else {
+    activeImprovements.push('Sealed acoustic suspension (zero port turbulence)');
+  }
+  if ((acoustics.braceApertureChamferDeg ?? 45) >= 30) {
+    aeroPortScore = Math.min(100, aeroPortScore + 2);
+  }
+  aeroPortScore = Math.max(25, Math.min(100, Math.round(aeroPortScore * 10) / 10));
+
+  // 3. Klippel Thermal Headroom & Rear Convective Venting (0-100)
+  let thermalHeadroomScore = 100;
+  const thermalReport = results.thermalVentReport;
+  const continuousPeW = thermalReport?.driverContinuousPowerW || woofer.pe * wooferQty;
+  // Evaluate continuous AES thermal compression
+  const continuousThermal = calculateKlippelThermalShift(
+    woofer,
+    'nominal_aes',
+    thermalReport
+  );
+  if (continuousThermal.powerCompressionDb > 1.25) {
+    thermalHeadroomScore -= Math.min(35, (continuousThermal.powerCompressionDb - 1.0) * 26);
+    if (!thermalReport?.enabled) {
+      limitingFactors.push(`Unvented voice-coil thermal compression (${continuousThermal.powerCompressionDb} dB)`);
+    }
+  }
+  if (thermalReport?.enabled) {
+    thermalHeadroomScore = Math.min(100, thermalHeadroomScore + 8);
+    activeImprovements.push(
+      `Rear Thermal Vents active (${thermalReport.slotCount} slots, -${thermalReport.powerCompressionSavedDb} dB compression)`
+    );
+  } else if (continuousPeW > 280) {
+    thermalHeadroomScore -= 12;
+    limitingFactors.push(`High continuous power (${continuousPeW}W RMS) without Rear Thermal Vents`);
+  }
+  thermalHeadroomScore = Math.max(30, Math.min(100, Math.round(thermalHeadroomScore * 10) / 10));
+
+  // 4. Vibro-Acoustic Structural Inertness (Rayleigh-Ritz f11 vs f_xo) (0-100)
+  let structuralModalScore = 100;
+  const bracedF11 = results.mechanics.bracedPanelModeHz || 500;
+  const xoLow = acoustics.crossoverLowHz || 2200;
+  const effectivePassbandTopHz =
+    dimensions.category === 'studio_sub' || dimensions.category === 'live_sub'
+      ? 160
+      : Math.min(450, xoLow * 0.35);
+  const panelEigenfrequencyRatio =
+    Math.round((bracedF11 / Math.max(80, effectivePassbandTopHz)) * 100) / 100;
+
+  if (panelEigenfrequencyRatio < 1.35) {
+    structuralModalScore -= Math.min(35, (1.35 - panelEigenfrequencyRatio) * 55);
+    limitingFactors.push(`Panel eigenmode f11 (${bracedF11} Hz) near woofer passband`);
+  } else {
+    activeImprovements.push(`Inert braced cabinet (f11 = ${bracedF11} Hz, ${acoustics.bracingLevel} bracing)`);
+  }
+  if (results.mechanics.wallComplianceWarning) {
+    structuralModalScore -= 22;
+    limitingFactors.push('Thin 3D-printed wall compliance warning');
+  }
+  if (acoustics.integralMatrixConfig?.enabled) {
+    structuralModalScore = Math.min(100, structuralModalScore + 6);
+    activeImprovements.push('TPMS Gyroid structural core active');
+  }
+  structuralModalScore = Math.max(30, Math.min(100, Math.round(structuralModalScore * 10) / 10));
+
+  // 5. Wavefront Diffraction & Internal Modal Damping (0-100)
+  let diffractionDampingScore = 100;
+  if (results.waveguide && !results.waveguide.isDiffractionSuppressed) {
+    diffractionDampingScore -= 14;
+    limitingFactors.push(
+      `Baffle edge radius (${results.waveguide.actualBaffleEdgeRadiusMm}mm < ${results.waveguide.minBaffleEdgeRadiusMm}mm λ/8)`
+    );
+  } else if (results.waveguide) {
+    activeImprovements.push(`Diffraction-suppressed baffle (R${results.waveguide.actualBaffleEdgeRadiusMm}mm)`);
+  }
+  if (results.standingWaves.standingWaveRiskLevel === 'high') {
+    diffractionDampingScore -= 18;
+    limitingFactors.push('High internal standing-wave risk');
+  } else if (results.standingWaves.standingWaveRiskLevel === 'moderate') {
+    diffractionDampingScore -= 6;
+  }
+  if (results.dampingAdvisor) {
+    const fillDiff = Math.abs(
+      (acoustics.dampingFillPercent ?? 50) - results.dampingAdvisor.recommendedFillPercent
+    );
+    if (fillDiff > 15) {
+      diffractionDampingScore -= 8;
+    }
+  }
+  diffractionDampingScore = Math.max(30, Math.min(100, Math.round(diffractionDampingScore * 10) / 10));
+
+  // 6. Electro-Acoustic Crossover, Baffle-Step & Terminal Linearity (0-100)
+  let electroAcousticScore = 100;
+  const baffleStepKneeHz = Math.round(115000 / Math.max(120, dimensions.externalWidthMm));
+  if (results.layout?.hasCollision) {
+    electroAcousticScore -= 35;
+    limitingFactors.push('3D driver/port baffle collision');
+  }
+  if (
+    results.speakonReport &&
+    (results.speakonReport.hasChannelCapacityWarning ||
+      results.speakonReport.isProhibitedConfiguration ||
+      results.speakonReport.overallClashStatus !== 'clear')
+  ) {
+    electroAcousticScore -= 18;
+    limitingFactors.push('Rear terminal configuration or depth clash');
+  }
+  if (acoustics.topology !== 'single') {
+    const tweeter = acoustics.driverAssignments.tweeter.driver;
+    const idealPadDb = Math.max(0, Math.round((tweeter.splSensitivityDb - woofer.splSensitivityDb) * 10) / 10);
+    const padDiff = Math.abs((acoustics.driverAssignments.tweeter.attenuationDb ?? 0) - idealPadDb);
+    if (padDiff > 2.5) {
+      electroAcousticScore -= Math.min(15, (padDiff - 2.5) * 4);
+      limitingFactors.push(`Tweeter L-pad attenuation mismatch (${padDiff.toFixed(1)} dB off target)`);
+    } else {
+      activeImprovements.push(`Synchronized LR${(acoustics.lowPassOrder || 2) * 2} crossover & Zobel network`);
+    }
+  }
+  electroAcousticScore = Math.max(30, Math.min(100, Math.round(electroAcousticScore * 10) / 10));
+
+  // Weighted Composite Reference Caliber Score (0-100)
+  const overallScore =
+    Math.round(
+      (alignmentScore * 0.24 +
+        aeroPortScore * 0.20 +
+        thermalHeadroomScore * 0.16 +
+        structuralModalScore * 0.16 +
+        diffractionDampingScore * 0.12 +
+        electroAcousticScore * 0.12) *
+        10
+    ) / 10;
+
+  let gradeLabel: SpeakerCaliberGrade = 'Master Reference';
+  if (overallScore < 70) {
+    gradeLabel = 'Sub-Optimal';
+  } else if (overallScore < 82) {
+    gradeLabel = 'Production Grade';
+  } else if (overallScore < 92) {
+    gradeLabel = 'Studio Precision';
+  }
+
+  return {
+    overallScore,
+    gradeLabel,
+    subScores: {
+      alignmentScore,
+      aeroPortScore,
+      thermalHeadroomScore,
+      structuralModalScore,
+      diffractionDampingScore,
+      electroAcousticScore,
+    },
+    activeImprovements: activeImprovements.slice(0, 5),
+    limitingFactors: limitingFactors.slice(0, 4),
+    vbTargetLiters,
+    vbDeviationPercent,
+    fbTargetHz,
+    fbDeviationHz,
+    panelEigenfrequencyRatio,
+    baffleStepKneeHz,
+  };
+}
+
+

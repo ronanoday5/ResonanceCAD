@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import type { DriverPreset, DriverImpedanceDataset } from '../types/loudspeaker.ts';
+import type { DriverAssignment, DriverPreset } from '../types/loudspeaker.ts';
 import { DRIVER_PRESETS } from '../services/acousticEngine.ts';
 import {
   parseImpedanceFile,
@@ -18,20 +18,53 @@ import {
   FileText,
 } from 'lucide-react';
 
+const CUSTOM_DRIVER_STORAGE_KEY = 'resonancecad_custom_drivers_v1';
+
+function loadSavedCustomDrivers(): DriverPreset[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_DRIVER_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    console.error('Failed to read saved custom drivers:', err);
+    return [];
+  }
+}
+
+function persistCustomDriver(driver: DriverPreset): DriverPreset[] {
+  try {
+    const existing = loadSavedCustomDrivers().filter((d) => d.id !== driver.id);
+    const updated = [driver, ...existing].slice(0, 20);
+    localStorage.setItem(CUSTOM_DRIVER_STORAGE_KEY, JSON.stringify(updated));
+    return updated;
+  } catch (err) {
+    console.error('Failed to persist custom driver:', err);
+    return [];
+  }
+}
+
 interface CustomDriverModalProps {
   currentDriver: DriverPreset;
-  onSave: (driver: DriverPreset) => void;
+  driverAssignments?: Record<'tweeter' | 'midrange' | 'woofer', DriverAssignment>;
+  onSave: (driver: DriverPreset, role?: 'woofer' | 'midrange' | 'tweeter') => void;
   onClose: () => void;
 }
 
 export const CustomDriverModal: React.FC<CustomDriverModalProps> = ({
   currentDriver,
+  driverAssignments,
   onSave,
   onClose,
 }) => {
+  const [targetRole, setTargetRole] = useState<'woofer' | 'midrange' | 'tweeter'>('woofer');
+  const [savedCustomDrivers, setSavedCustomDrivers] = useState<DriverPreset[]>(() =>
+    loadSavedCustomDrivers()
+  );
+
   const [formData, setFormData] = useState<DriverPreset>({
     ...currentDriver,
-    id: 'custom_user_driver',
+    id: `custom_user_${Date.now().toString(36)}`,
     brand: currentDriver.brand === 'Dayton Audio' ? 'Custom' : currentDriver.brand,
     model: currentDriver.model.includes('Custom')
       ? currentDriver.model
@@ -44,13 +77,31 @@ export const CustomDriverModal: React.FC<CustomDriverModalProps> = ({
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const handleSelectTargetRole = (role: 'woofer' | 'midrange' | 'tweeter') => {
+    setTargetRole(role);
+    const baseDriver = driverAssignments?.[role]?.driver || currentDriver;
+    setFormData({
+      ...baseDriver,
+      id: `custom_${role}_${Date.now().toString(36)}`,
+      model: baseDriver.model.includes('Custom')
+        ? baseDriver.model
+        : `${baseDriver.model} (Custom)`,
+      reOhm: baseDriver.reOhm ?? (baseDriver.nominalDiameterInch >= 12 ? 5.6 : 3.6),
+      leMh: baseDriver.leMh ?? 0.45,
+    });
+    setUploadError(null);
+    setUploadSuccess(null);
+  };
+
+  const allAvailablePresets = [...savedCustomDrivers, ...DRIVER_PRESETS];
+
   const handleLoadPreset = (presetId: string) => {
-    const found = DRIVER_PRESETS.find((d) => d.id === presetId);
+    const found = allAvailablePresets.find((d) => d.id === presetId);
     if (found) {
       setFormData({
         ...found,
-        id: 'custom_' + found.id,
-        model: `${found.model} (Customized)`,
+        id: found.id.startsWith('custom_') ? found.id : 'custom_' + found.id,
+        model: found.model.includes('Custom') ? found.model : `${found.model} (Customized)`,
         reOhm: found.reOhm ?? (found.nominalDiameterInch >= 12 ? 5.6 : 3.6),
         leMh: found.leMh ?? 0.45,
       });
@@ -136,7 +187,9 @@ export const CustomDriverModal: React.FC<CustomDriverModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSave(formData);
+    const updatedList = persistCustomDriver(formData);
+    setSavedCustomDrivers(updatedList);
+    onSave(formData, targetRole);
     onClose();
   };
 
@@ -165,15 +218,49 @@ export const CustomDriverModal: React.FC<CustomDriverModalProps> = ({
 
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-5 space-y-4 max-h-[78vh] overflow-y-auto">
+          {/* Target Transducer Slot Selector */}
+          <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-lg">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-mono text-slate-300 font-bold uppercase tracking-wider">
+                Target Transducer Band Slot
+              </span>
+              <span className="text-[10px] font-mono text-cyan-400">
+                Persists to Local Library ({savedCustomDrivers.length} saved)
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 font-mono text-xs">
+              {(
+                [
+                  { id: 'woofer', label: 'Woofer / Subwoofer (LF)' },
+                  { id: 'midrange', label: 'Midrange Driver (MF)' },
+                  { id: 'tweeter', label: 'Tweeter / Horn (HF)' },
+                ] as const
+              ).map((slot) => (
+                <button
+                  key={slot.id}
+                  type="button"
+                  onClick={() => handleSelectTargetRole(slot.id)}
+                  className={`py-1.5 px-2.5 rounded-lg border font-bold transition cursor-pointer ${
+                    targetRole === slot.id
+                      ? 'bg-cyan-950 border-cyan-500 text-cyan-200'
+                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {slot.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Quick Preset Importer */}
           <div className="bg-slate-950/80 border border-cyan-800/60 p-3 rounded-lg">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-[11px] font-mono text-cyan-400 flex items-center gap-1.5 font-bold uppercase tracking-wider">
                 <Download className="w-3.5 h-3.5" />
-                Quick-Load Preset Baseline from Catalogue
+                Quick-Load Preset or Saved Custom Transducer
               </span>
               <span className="text-[10px] text-slate-400 font-mono">
-                {DRIVER_PRESETS.length} Transducers Available
+                {allAvailablePresets.length} Transducers Available
               </span>
             </div>
             <select
@@ -184,9 +271,9 @@ export const CustomDriverModal: React.FC<CustomDriverModalProps> = ({
               className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-slate-200 font-sans focus:outline-none focus:border-cyan-400 cursor-pointer"
             >
               <option value="" disabled>
-                -- Select a driver from JBL Pro, Dayton, Scan-Speak, SEAS, Peerless --
+                -- Select a saved custom driver or factory preset (JBL Pro, Dayton, Scan-Speak, SEAS) --
               </option>
-              {DRIVER_PRESETS.map((d) => (
+              {allAvailablePresets.map((d) => (
                 <option key={d.id} value={d.id}>
                   [{d.brand}] {d.model} — {d.nominalDiameterInch}" (Fs {d.fs}Hz, Qts {d.qts}, Vas {d.vas}L, {d.pe}W)
                 </option>

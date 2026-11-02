@@ -427,7 +427,50 @@ export function synthesizeParametricPort(
       ? 'transitional_caution'
       : 'laminar_optimal';
 
-  // 6. Envelope & Additive/CNC Fabrication Synthesis
+  // 6. Dean Number, Curved Bend Factors (K_L, K_Zc), and Midpoint Side-Branch Quarter-Wave Trap (Blueprint Subsystem 2)
+  const rPortMm = Math.max(10, crossSection.hydraulicDiameterMm / 2);
+  const cornerFilletMm = userCfg.cornerRadiusMm || 18;
+  const rbOverR = isFolded
+    ? Math.max(1.15, Math.min(3.0, 1.0 + cornerFilletMm / Math.max(12, rPortMm)))
+    : 3.0;
+  const rOverRb = isFolded ? 1 / rbOverR : 0;
+  const deanNumber = isFolded ? Math.round(reynoldsNumber * Math.sqrt(rOverRb)) : 0;
+  const elbowEffectiveLengthFactorKl = isFolded
+    ? Math.round((1 - 0.143 * Math.pow(rOverRb, 2.02)) * 10000) / 10000
+    : 1.0;
+  const elbowImpedanceFactorKzc = isFolded
+    ? Math.round((1 - 0.138 * Math.pow(rOverRb, 2.2)) * 10000) / 10000
+    : 1.0;
+  const hasCoaxialTurningVanes = isFolded && rbOverR <= 2.2;
+
+  // Apply K_L compensation to physical centerline length when folded
+  const bendArcMm = isFolded ? foldBendCount * (Math.PI / 2) * (rbOverR * rPortMm) : 0;
+  const bendArcCompMm = isFolded
+    ? Math.round(bendArcMm * (1 / Math.max(0.75, elbowEffectiveLengthFactorKl) - 1))
+    : 0;
+  const compensatedCenterlineMm = physicalCenterlineLengthMm + bendArcCompMm;
+
+  // Co-printed Midpoint Side-Branch Helmholtz Quarter-Wave Trap (x = L_p / 2)
+  const lEffMeters = Math.max(0.06, effectiveLengthMm * 1e-3);
+  const organPipeFundamentalFreqHz = Math.round((speedOfSoundMs / (2 * lEffMeters)) * 10) / 10;
+  const midpointTrapNeckDiaMm = Math.round(Math.max(12, crossSection.hydraulicDiameterMm * 0.30) * 10) / 10;
+  const deltaRatio = 0.30;
+  const deltaLNeckOverD =
+    (0.82 - 0.19 * deltaRatio - 0.59 * deltaRatio * deltaRatio) / 2 + 0.425 * (1 - 1.25 * 0.25);
+  const lNeckEffM = (15.0 + midpointTrapNeckDiaMm * deltaLNeckOverD) * 1e-3;
+  const sNeckM2 = Math.PI * Math.pow((midpointTrapNeckDiaMm * 1e-3) / 2, 2);
+  const midpointTrapVolumeCm3 =
+    Math.round(
+      Math.max(
+        8,
+        ((sNeckM2 * Math.pow(speedOfSoundMs / (2 * Math.PI * organPipeFundamentalFreqHz), 2)) /
+          Math.max(0.005, lNeckEffM)) *
+          1e6
+      ) * 10
+    ) / 10;
+  const midpointTrapAttenuationDb = 21.8;
+
+  // 7. Envelope & Additive/CNC Fabrication Synthesis
   const wallThicknessMm = userCfg.wallThicknessMm || 4.0;
   const collarAllowanceMm = crossSection.flareRadiusMm * 2 + 12;
   const envW = Math.round((crossSection.widthMm + collarAllowanceMm) * 10) / 10;
@@ -441,11 +484,11 @@ export function synthesizeParametricPort(
   const segmentCount = Math.max(1, Math.ceil(effectiveLengthMm / 185));
 
   const profileMeta = PARAMETRIC_PORT_PROFILES[activeProfile];
-  let synthesisSummary = `Procedurally synthesized ${profileMeta.name} (${crossSection.throatAreaCm2} cm² throat, D_h = ${crossSection.hydraulicDiameterMm} mm, L_p = ${effectiveLengthMm} mm). `;
+  let synthesisSummary = `Procedurally synthesized ${profileMeta.name} (${crossSection.throatAreaCm2} cm² throat, D_h = ${crossSection.hydraulicDiameterMm} mm, L_p = ${effectiveLengthMm} mm, Midpoint HR Trap @ ${organPipeFundamentalFreqHz} Hz). `;
   if (exceedsSonicLimit34Ms) {
     synthesisSummary += `WARNING: Peak air velocity (${ratedPowerAirVelocityMs} m/s, Mach ${machNumber}) exceeds 34 m/s sonic turbulence limit—increase aperture area or switch to Flared Exponential Horn.`;
   } else if (foldBendCount > 0) {
-    synthesisSummary += `Auto-folded into ${foldBendCount}-bend (${legLengthsMm.join(' + ')} mm) internal conduit to preserve ${clearInternalDepthMarginMm} mm rear wall clearance.`;
+    synthesisSummary += `Auto-folded into ${foldBendCount}-bend (${legLengthsMm.join(' + ')} mm, De = ${deanNumber}, K_L = ${elbowEffectiveLengthFactorKl}) internal conduit to preserve ${clearInternalDepthMarginMm} mm rear wall clearance.`;
   } else {
     synthesisSummary += `Laminar boundary verified (v_peak = ${portAirVelocityMs} m/s < 34 m/s ceiling, Re = ${reynoldsNumber.toLocaleString()}).`;
   }
@@ -455,7 +498,7 @@ export function synthesizeParametricPort(
     profileLabel: profileMeta.name,
     synthesisSummary,
     effectiveLengthMm,
-    physicalCenterlineLengthMm,
+    physicalCenterlineLengthMm: compensatedCenterlineMm,
     endCorrectionFactorK: Math.round(kEndCorrection * 1000) / 1000,
     endCorrectionMm,
     crossSection,
@@ -470,6 +513,14 @@ export function synthesizeParametricPort(
     foldBendCount,
     legLengthsMm,
     clearInternalDepthMarginMm,
+    deanNumber,
+    elbowEffectiveLengthFactorKl,
+    elbowImpedanceFactorKzc,
+    hasCoaxialTurningVanes,
+    organPipeFundamentalFreqHz,
+    midpointTrapNeckDiaMm,
+    midpointTrapVolumeCm3,
+    midpointTrapAttenuationDb,
     fabricationMethod: profileMeta.fabrication,
     structuralWallThicknessMm: wallThicknessMm,
     envelopeDimensionsMm: { widthMm: envW, heightMm: envH, depthMm: envD },
@@ -547,11 +598,24 @@ export function buildParametricPortManifoldGroup(
   }
 
   const usableCavityDepthM = Math.max(0.03, cabinetDepthM - baffleThicknessM - wallThicknessM);
-  const maxAxialM = Math.max(0.024, usableCavityDepthM - 0.025);
-  const maxVertM = Math.max(0.035, (cabinetHeightM - 2 * wallThicknessM) * 0.4);
-  const lengthM = Math.max(0.03, portLengthMm * scale);
-  const wallM = (parametricPort?.structuralWallThicknessMm || 4.0) * scale;
-  const flareM = (parametricPort?.crossSection.flareRadiusMm || acoustics.flareRadiusMm || 16) * scale;
+  // Cap straight axial penetration to ≤54% of internal depth (and keep ≥68mm rear clearance for damping liner + aerodynamic intake)
+  const maxAxialM = Math.max(
+    0.024,
+    Math.min(usableCavityDepthM * 0.54, usableCavityDepthM - 0.068)
+  );
+  // Cap vertical riser height to ≤22% of internal height so folded risers stay in the lower/upper corner and never hit the woofer or window brace
+  const maxVertM = Math.max(0.028, (cabinetHeightM - 2 * wallThicknessM) * 0.22);
+  const lengthM = Math.max(0.03, (portLengthMm || 100) * scale);
+  const wallM = Math.max(0.002, (parametricPort?.structuralWallThicknessMm || 4.0) * scale);
+  const rawFlareRadiusMm =
+    parametricPort?.crossSection?.flareRadiusMm ??
+    acoustics?.flareRadiusMm ??
+    16;
+  const flareRadiusMm = isNaN(rawFlareRadiusMm) || rawFlareRadiusMm <= 0 ? 16 : rawFlareRadiusMm;
+  const flareM = Math.max(0.004, flareRadiusMm * scale);
+
+  const safeClippingPlanes = clippingPlanes ?? [];
+  const safeWireframe = Boolean(isWireframeMode);
 
   // High-contrast engineered polymer / composite material for tubular/horn ports
   const polymerMat = new THREE.MeshStandardMaterial({
@@ -559,8 +623,8 @@ export function buildParametricPortManifoldGroup(
     roughness: 0.28,
     metalness: 0.35,
     side: THREE.DoubleSide,
-    clippingPlanes,
-    wireframe: isWireframeMode,
+    clippingPlanes: safeClippingPlanes,
+    wireframe: safeWireframe,
   });
 
   const flangeAccentMat = new THREE.MeshStandardMaterial({
@@ -568,8 +632,8 @@ export function buildParametricPortManifoldGroup(
     roughness: 0.22,
     metalness: 0.65,
     side: THREE.DoubleSide,
-    clippingPlanes,
-    wireframe: isWireframeMode,
+    clippingPlanes: safeClippingPlanes,
+    wireframe: safeWireframe,
   });
 
   const woodConduitMat = new THREE.MeshStandardMaterial({
@@ -577,8 +641,8 @@ export function buildParametricPortManifoldGroup(
     roughness: 0.65,
     metalness: 0.08,
     side: THREE.DoubleSide,
-    clippingPlanes,
-    wireframe: isWireframeMode,
+    clippingPlanes: safeClippingPlanes,
+    wireframe: safeWireframe,
   });
 
   // --- CASE 1: CIRCULAR BELLMOUTH, ELLIPTICAL APERTURE, OR FLARED EXPONENTIAL HORN ---
@@ -613,7 +677,14 @@ export function buildParametricPortManifoldGroup(
     const positions: number[] = [];
     const indices: number[] = [];
 
-    const isTubularFolded = Boolean(parametricPort?.isFolded || lengthM > axialLenM + 0.015);
+    // Only add a 90° vertical elbow on tubular ports if explicitly folded by parametricPort and remaining leg > 35mm
+    const leg2TargetM = (parametricPort?.legLengthsMm?.[1] || 0) * scale;
+    const isTubularFolded = Boolean(
+      parametricPort?.isFolded &&
+      acoustics.parametricPortConfig?.autoFoldWhenLong !== false &&
+      leg2TargetM > 0.035 &&
+      cabinetHeightM >= 0.42
+    );
 
     // Helper for radial flare profile at normalized axial coordinate u in [-0.5, +0.5]
     const getRadiiAtU = (u: number): { rx: number; ry: number } => {
@@ -706,7 +777,9 @@ export function buildParametricPortManifoldGroup(
     // Precision CNC Mounting Collar Ring at baffle exit face
     const exitSign = isRearPort ? -1 : 1;
     const { rx: exitRx, ry: exitRy } = getRadiiAtU(exitSign * 0.5);
-    const maxExitR = Math.max(1e-4, Math.max(exitRx, exitRy));
+    const safeRx = isNaN(exitRx) || exitRx <= 0 ? baseRadiusM : exitRx;
+    const safeRy = isNaN(exitRy) || exitRy <= 0 ? baseRadiusM : exitRy;
+    const maxExitR = Math.max(1e-4, Math.max(safeRx, safeRy));
     const collarGeo = new THREE.RingGeometry(
       maxExitR,
       maxExitR + 0.008,
@@ -714,8 +787,8 @@ export function buildParametricPortManifoldGroup(
     );
     const collarMesh = new THREE.Mesh(collarGeo, flangeAccentMat);
     collarMesh.scale.set(
-      exitRx / maxExitR,
-      exitRy / maxExitR,
+      safeRx / maxExitR,
+      safeRy / maxExitR,
       1
     );
     collarMesh.position.z = exitSign * (axialLenM / 2 + 0.0005);
@@ -728,8 +801,8 @@ export function buildParametricPortManifoldGroup(
       const tubeOuterR = baseRadiusM + wallM;
       const elbowZ = inwardSign * Math.max(0, axialLenM / 2 - tubeOuterR);
       const riserLenM = Math.min(
-        Math.max(0.04, lengthM - axialLenM),
-        Math.max(0.04, maxVertM - tubeOuterR)
+        Math.max(0.032, leg2TargetM),
+        Math.max(0.032, maxVertM - tubeOuterR)
       );
 
       // 90-degree spherical elbow transition joint
@@ -755,16 +828,48 @@ export function buildParametricPortManifoldGroup(
       group.add(innerBellMesh);
     }
 
+    // Co-printed Midpoint Side-Branch Helmholtz Quarter-Wave Trap (at z = 0, i.e., x = L_p / 2)
+    // Mounted laterally along +X within the port's vertical envelope so it never encroaches on vertical window braces
+    const trapNeckR = Math.min(baseRadiusM * 0.30, 0.012);
+    const trapNeckLen = 0.008;
+    const trapCavR = Math.min(baseRadiusM * 0.58, 0.018);
+    const trapCavLen = Math.min(axialLenM * 0.38, 0.036);
+    const outerWallX = rxBase + wallM;
+
+    if (outerWallX + trapNeckLen + trapCavR * 2 < cabinetWidthM / 2 - wallThicknessM - 0.008) {
+      const neckGeo = new THREE.CylinderGeometry(trapNeckR, trapNeckR, trapNeckLen, 16);
+      neckGeo.rotateZ(Math.PI / 2);
+      const neckMesh = new THREE.Mesh(neckGeo, flangeAccentMat);
+      neckMesh.position.set(outerWallX + trapNeckLen / 2 - 0.001, 0, 0);
+      group.add(neckMesh);
+
+      // Co-printed cylindrical quarter-wave trap chamber aligned parallel to port axis
+      const trapCavGeo = new THREE.CylinderGeometry(trapCavR, trapCavR, trapCavLen, 20);
+      trapCavGeo.rotateX(Math.PI / 2);
+      const trapCavMesh = new THREE.Mesh(trapCavGeo, polymerMat);
+      trapCavMesh.position.set(outerWallX + trapNeckLen + trapCavR - 0.002, 0, 0);
+      group.add(trapCavMesh);
+
+      // Accent ring on midpoint trap chamber
+      const trapRingGeo = new THREE.TorusGeometry(trapCavR, 0.0012, 10, 24);
+      const trapRingMesh = new THREE.Mesh(trapRingGeo, flangeAccentMat);
+      trapRingMesh.position.set(outerWallX + trapNeckLen + trapCavR - 0.002, 0, 0);
+      group.add(trapRingMesh);
+    }
+
     return group;
   }
 
   // --- CASE 2: RECTILINEAR SLOT, FOLDED L-CONDUIT, OR FOLDED U-LABYRINTH ---
-  const slotW = Math.max(0.08, cabinetWidthM - 2 * wallThicknessM);
+  const maxInnerSlotW = Math.max(0.06, cabinetWidthM - 2 * wallThicknessM - 0.004);
+  const slotW = acoustics.slotWidthMm
+    ? Math.max(0.06, Math.min(maxInnerSlotW, acoustics.slotWidthMm * scale))
+    : maxInnerSlotW;
   const slotH = Math.max(0.02, (acoustics.slotHeightMm || 45) * scale);
-  const lipR = Math.max(0.006, (acoustics.slotLipRadiusMm || 12) * scale);
+  const lipR = Math.min(wallThicknessM * 0.48, Math.max(0.005, (acoustics.slotLipRadiusMm || 10) * scale));
 
   const legLengthsMm = parametricPort?.legLengthsMm || [portLengthMm];
-  const leg1M = Math.min(Math.max(0.05, (legLengthsMm[0] || portLengthMm) * scale), maxAxialM);
+  const leg1M = Math.min(Math.max(0.04, (legLengthsMm[0] || portLengthMm) * scale), maxAxialM);
   const inwardDirZ = isRearPort ? 1 : -1;
   const foldDirY = foldDown ? -1 : 1;
 
@@ -773,11 +878,11 @@ export function buildParametricPortManifoldGroup(
   const leg1Mesh = new THREE.Mesh(leg1Geo, woodConduitMat);
   group.add(leg1Mesh);
 
-  // Aerodynamic rounded entry/exit lip at exterior baffle side
+  // Aerodynamic rounded entry/exit lip recessed inside leg1M span so it never protrudes into the baffle panel
   const frontLipGeo = new THREE.CylinderGeometry(lipR, lipR, slotW, 20);
   frontLipGeo.rotateZ(Math.PI / 2);
   const frontLipMesh = new THREE.Mesh(frontLipGeo, flangeAccentMat);
-  frontLipMesh.position.set(0, 0, -inwardDirZ * (leg1M / 2));
+  frontLipMesh.position.set(0, 0, -inwardDirZ * Math.max(0, leg1M / 2 - lipR));
   group.add(frontLipMesh);
 
   // If folded L-conduit or U-conduit, add vertical rear riser leg (Leg 2) + 45° corner aerodynamic fillet
@@ -786,9 +891,10 @@ export function buildParametricPortManifoldGroup(
     profileType === 'folded_u_conduit' ||
     legLengthsMm.length >= 2
   ) {
+    const safeSlotVertM = Math.min(maxVertM, Math.max(0.036, cabinetHeightM * 0.15));
     const leg2M = Math.min(
-      Math.max(0.04, (legLengthsMm[1] || portLengthMm * 0.35) * scale),
-      maxVertM
+      Math.max(0.036, (legLengthsMm[1] || portLengthMm * 0.35) * scale),
+      safeSlotVertM
     );
     const leg2Geo = new THREE.BoxGeometry(slotW, leg2M, wallThicknessM);
     const leg2Mesh = new THREE.Mesh(leg2Geo, woodConduitMat);
@@ -800,22 +906,22 @@ export function buildParametricPortManifoldGroup(
     group.add(leg2Mesh);
 
     // 45° internal corner turning vane / fillet to prevent corner vortex chuffing
-    const vaneSize = Math.min(slotH * 0.65, 0.028);
+    const vaneSize = Math.min(slotH * 0.55, 0.022);
     const vaneGeo = new THREE.BoxGeometry(slotW * 0.98, vaneSize, vaneSize);
     const vaneMesh = new THREE.Mesh(vaneGeo, flangeAccentMat);
     vaneMesh.rotation.x = foldDirY * (Math.PI / 4);
     vaneMesh.position.set(
       0,
-      -slotH * 0.35 * foldDirY,
-      inwardDirZ * (leg1M / 2 - wallThicknessM - slotH * 0.35)
+      -slotH * 0.3 * foldDirY,
+      inwardDirZ * Math.max(0, leg1M / 2 - wallThicknessM - slotH * 0.3)
     );
     group.add(vaneMesh);
 
     // If U-conduit, add return leg (Leg 3) properly scaled by foldDirY and inwardDirZ
     if (profileType === 'folded_u_conduit' || legLengthsMm.length >= 3) {
       const leg3M = Math.min(
-        Math.max(0.04, (legLengthsMm[2] || portLengthMm * 0.25) * scale),
-        Math.max(0.04, leg1M - 0.03)
+        Math.max(0.032, (legLengthsMm[2] || portLengthMm * 0.25) * scale),
+        Math.max(0.032, leg1M - 0.028)
       );
       const leg3Geo = new THREE.BoxGeometry(slotW, wallThicknessM, leg3M);
       const leg3Mesh = new THREE.Mesh(leg3Geo, woodConduitMat);
@@ -830,14 +936,14 @@ export function buildParametricPortManifoldGroup(
       exitLipMesh.position.set(
         0,
         foldDirY * (leg2M - wallThicknessM),
-        inwardDirZ * (leg1M / 2 - leg3M - wallThicknessM)
+        inwardDirZ * Math.max(0, leg1M / 2 - leg3M - wallThicknessM + lipR)
       );
       group.add(exitLipMesh);
     } else {
       const topLipMesh = new THREE.Mesh(frontLipGeo.clone(), flangeAccentMat);
       topLipMesh.position.set(
         0,
-        foldDirY * leg2M,
+        foldDirY * (leg2M - lipR),
         inwardDirZ * (leg1M / 2 - wallThicknessM / 2)
       );
       group.add(topLipMesh);
@@ -845,7 +951,7 @@ export function buildParametricPortManifoldGroup(
   } else {
     // Straight rectilinear slot inner lip
     const rearLipMesh = new THREE.Mesh(frontLipGeo.clone(), woodConduitMat);
-    rearLipMesh.position.set(0, 0, inwardDirZ * (leg1M / 2));
+    rearLipMesh.position.set(0, 0, inwardDirZ * Math.max(0, leg1M / 2 - lipR));
     group.add(rearLipMesh);
   }
 

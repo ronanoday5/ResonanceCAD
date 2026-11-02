@@ -11,7 +11,8 @@ export type MaterialSubGroup =
   | 'baltic_birch'
   | 'plywood_hardwood'
   | 'mdf_hdf'
-  | 'carbon_fiber';
+  | 'carbon_fiber'
+  | 'aluminum_billet';
 
 export type MaterialType =
   | 'baltic_birch_18'
@@ -23,6 +24,7 @@ export type MaterialType =
   | 'solid_hardwood_20'
   | 'carbon_fiber_12'
   | 'carbon_fiber_18'
+  | 'aluminum_6061'
   | 'pa12_cf'
   | 'pa6_cf'
   | 'petg_cf'
@@ -101,6 +103,58 @@ export interface CategoryHardwareConfig {
   showPoleMount: boolean;
   showCornerProtectors: boolean;
   showIsolationFeet: boolean;
+  showThermalVentSlots?: boolean;
+}
+
+export type ThermalVentSizingMode = 'auto_driver_pe' | 'manual';
+export type ThermalVentPattern = 'convective_dual_bank' | 'vertical_chimney_array';
+
+export interface ThermalVentConfig {
+  enabled?: boolean;
+  sizingMode?: ThermalVentSizingMode;
+  pattern?: ThermalVentPattern;
+  manualSlotCount?: number; // 2 to 16 slots
+  manualSlotWidthMm?: number; // 30 to 140 mm
+  manualSlotHeightMm?: number; // 4 to 14 mm
+  hasInternalHermeticHeatExchanger?: boolean; // Sealed aluminum convective chimney to preserve cabinet airtightness
+}
+
+export interface ThermalVentSlotPlacement {
+  slotIndex: number;
+  role: 'intake_lower' | 'exhaust_upper';
+  xMm: number; // relative to rear panel center
+  yMm: number; // relative to rear panel center
+  widthMm: number;
+  heightMm: number;
+  cornerRadiusMm: number;
+}
+
+export interface ThermalVentilationReport {
+  enabled: boolean;
+  sizingMode: ThermalVentSizingMode;
+  pattern: ThermalVentPattern;
+  driverContinuousPowerW: number; // Total driver RMS power rating (N_woofer * Pe_woofer + HF/MF)
+  thermalDissipationLoadW: number; // ~96% of input electrical power converted to Joule heat
+  powerTier: 'compact_low_power' | 'studio_mid_power' | 'pro_high_power' | 'touring_extreme_power';
+  powerTierLabel: string;
+  slotCount: number;
+  intakeSlotCount: number;
+  exhaustSlotCount: number;
+  slotWidthMm: number;
+  slotHeightMm: number;
+  slotCornerRadiusMm: number;
+  slotPitchMm: number;
+  totalNetFreeAreaCm2: number;
+  requiredMinFreeAreaCm2: number;
+  buoyancyAirflowVelocityMs: number;
+  convectiveVolumeFlowLs: number;
+  voiceCoilTempDropC: number;
+  powerCompressionSavedDb: number;
+  hasInternalHermeticHeatExchanger: boolean;
+  hermeticSealDescription: string;
+  bankEnvelopeWidthMm: number;
+  bankEnvelopeHeightMm: number;
+  slots: ThermalVentSlotPlacement[];
 }
 
 export interface SpeakerCategorySpec {
@@ -638,6 +692,9 @@ export interface CrossoverNetworkResult {
   lpadTweeter?: { rSeriesOhm: number; rParallelOhm: number };
   lpadMidrange?: { rSeriesOhm: number; rParallelOhm: number };
   zobelWoofer?: { rZobelOhm: number; cZobelUf: number };
+  fsNotchWoofer?: { rcOhm: number; ccUf: number; lcMh: number; rMaxOhm: number };
+  baffleStepWoofer?: { fStepHz: number; rBscOhm: number; lBscMh: number };
+  cdHornBypassTweeter?: { cbUf: number; fMassBreakpointHz: number };
   allComponents: CrossoverComponent[];
   estimatedPcbAreaCm2: number;
 }
@@ -675,8 +732,9 @@ export interface FirSimulationReport {
   advisoryTitle: string;
   advisoryDescription: string;
   wooferTaps: number[];
+  midrangeTaps?: number[];
   tweeterTaps: number[];
-  impulseResponsePoints: { sample: number; woofer: number; tweeter: number }[];
+  impulseResponsePoints: { sample: number; woofer: number; midrange?: number; tweeter: number }[];
   phaseResponsePoints: { freq: number; iirPhaseDeg: number; firPhaseDeg: number; excessPhaseUnwrappedDeg: number }[];
   groupDelayPoints: { freq: number; iirGroupDelayMs: number; firGroupDelayMs: number }[];
 }
@@ -769,6 +827,8 @@ export interface AcousticParameters {
   alignment: AlignmentType;
   targetQtc: number;
   targetFb: number;
+  bandpassFrontVbLiters?: number;
+  bandpassRearVbLiters?: number;
   portType: 'round' | 'slot';
   parametricPortConfig?: ParametricPortConfig;
   portPlacement?: PortPlacement;
@@ -781,6 +841,7 @@ export interface AcousticParameters {
   numberOfPorts: number;
   dampingFillPercent: number;
   bracingLevel: 'minimal' | 'standard' | 'heavy';
+  braceApertureChamferDeg?: number;
   // Material custom economics
   materialPricing?: MaterialPricingConfig;
   // Crossover settings
@@ -792,6 +853,11 @@ export interface AcousticParameters {
   highPassType: FilterType;
   midPassOrder?: FilterOrder;
   midPassType?: FilterType;
+  // Passive Conjugate & Compensation Network Toggles
+  enableZobelNetwork?: boolean;
+  enableFsNotchTank?: boolean;
+  enableBaffleStepComp?: boolean;
+  enableCdHornBypass?: boolean;
   // Advanced Electroacoustic & Physics Parameters (from Training Data)
   thermalDriveLevel?: 'small_signal' | 'nominal_aes' | 'max_continuous';
   operatingTemperatureC?: number;
@@ -996,6 +1062,7 @@ export interface EnclosureDimensions {
   category?: SpeakerCategory;
   subcategory?: SpeakerSubcategory;
   hardware?: CategoryHardwareConfig;
+  thermalVentConfig?: ThermalVentConfig;
   speakonConfig?: SpeakonConfig;
   diffuserConfig?: ProceduralDiffuserConfig;
   integralMatrixConfig?: IntegralMatrixConfig;
@@ -1151,6 +1218,15 @@ export interface ParametricPortReport {
   foldBendCount: 0 | 1 | 2;
   legLengthsMm: number[];
   clearInternalDepthMarginMm: number;
+  // Aeroacoustic Bend & Quarter-Wave Trap Telemetry (Blueprint Subsystem 2)
+  deanNumber?: number;
+  elbowEffectiveLengthFactorKl?: number;
+  elbowImpedanceFactorKzc?: number;
+  hasCoaxialTurningVanes?: boolean;
+  organPipeFundamentalFreqHz?: number;
+  midpointTrapNeckDiaMm?: number;
+  midpointTrapVolumeCm3?: number;
+  midpointTrapAttenuationDb?: number;
   // CAD & Manufacturing Synthesis
   fabricationMethod: 'additive_3d_print' | 'cnc_laminated_wood' | 'hybrid_flared_slot';
   structuralWallThicknessMm: number;
@@ -1430,6 +1506,235 @@ export interface AcousticCalculationResult {
   diffuserReport?: ProceduralDiffuserReport;
   additiveAcousticReport?: AdditiveAcousticReport;
   systemImpedance?: SystemImpedanceReport;
+  multiphysicsBlueprint?: MultiphysicsBlueprintReport;
+  thermalVentReport?: ThermalVentilationReport;
+  caliberReport?: SpeakerCaliberReport;
+}
+
+export interface CoOptimizationConfig {
+  enabled: boolean;
+  lockCabinetDimensions: boolean;
+  lockPortGeometry: boolean;
+  lockThermalVents: boolean;
+  lockStructuralBracing: boolean;
+  lockCrossoverNetwork: boolean;
+}
+
+export type SpeakerCaliberGrade =
+  | 'Master Reference'
+  | 'Studio Precision'
+  | 'Production Grade'
+  | 'Sub-Optimal';
+
+export interface SpeakerCaliberSubScores {
+  alignmentScore: number; // 0-100: Vb & Fb/Qtc fidelity to optimal Thiele-Small alignment
+  aeroPortScore: number; // 0-100: Port Mach laminar margin, flare radius & Karal-Fok brace relief
+  thermalHeadroomScore: number; // 0-100: Voice-coil steady-state ΔTv & thermal compression < 1.0 dB
+  structuralModalScore: number; // 0-100: Rayleigh-Ritz f11 / f_xo separation >= 2.0 & wall compliance
+  diffractionDampingScore: number; // 0-100: Baffle edge radius r >= lambda/8 & standing-wave mitigation
+  electroAcousticScore: number; // 0-100: Crossover driver bandwidth, baffle-step & Zobel conjugation
+}
+
+export interface SpeakerCaliberReport {
+  overallScore: number; // 0-100 composite reference caliber score (1 decimal)
+  gradeLabel: SpeakerCaliberGrade;
+  subScores: SpeakerCaliberSubScores;
+  activeImprovements: string[];
+  limitingFactors: string[];
+  vbTargetLiters: number;
+  vbDeviationPercent: number;
+  fbTargetHz: number;
+  fbDeviationHz: number;
+  panelEigenfrequencyRatio: number; // f11_braced / f_xo
+  baffleStepKneeHz: number;
+}
+
+export interface CaliberDeltaEvent {
+  timestamp: number;
+  previousScore: number;
+  currentScore: number;
+  deltaScore: number;
+  triggerDescription: string;
+  coOptimizedActions: string[];
+  vbDriftLiters: number;
+  compressionDeltaDb: number;
+}
+
+// --- ARCHITECTURAL BLUEPRINT FOR RESONANCECAD: 7-SUBSYSTEM MULTIPHYSICS TYPES ---
+
+export interface KaralFokBraceVirtualMassReport {
+  braceCount: number;
+  openAreaRatioPhi: number; // phi = S_open / S_cab (0.20 to 0.65)
+  constrictionRatioXi: number; // xi = sqrt(phi)
+  jaouenChevillotteInteractionFactorPsi: number; // Psi(phi) = 0.8216 - 1.34*xi + 0.13*xi^2 + 0.39*xi^3
+  twoSidedAttachedLengthMm: number; // delta_end = (16 * r_open / (3 * pi)) * Psi(phi)
+  singleBraceAcousticMassKgM4: number; // M_brace (kg/m^4)
+  totalSeriesBraceMassKgM4: number; // N_b * kappa_v^2 * M_brace
+  uncompensatedFbHz: number;
+  shiftedActualFbHz: number; // fb_actual downward shift (1.5% to 7.0%)
+  tuningFrequencyShiftPercent: number; // e.g. -3.05%
+  portPreShorteningCompensationMm: number; // physical cut length reduction to hold target Fb
+  helmholtzNumberKa: number; // k * L_max
+  tmmThroatImpedanceMagPasM3: number;
+}
+
+export interface DeanVortexPortAeroReport {
+  terminationRegime:
+    | 'unobstructed_intruded_pipe'
+    | 'flush_internal_partition'
+    | 'parallel_wall_dihedral'
+    | 'normal_rear_wall_magnet';
+  terminationRegimeLabel: string;
+  interiorEndCorrectionRatioDeltaLOverR: number;
+  bendRadiusRatioRbOverR: number; // r_b / r (e.g. 1.50 standard, 2.00 moderate sweep)
+  curvatureRatioROverRb: number; // r / r_b
+  deanNumber: number; // De = Re * sqrt(r / r_b)
+  effectiveLengthFactorKl: number; // K_L = 1 - 0.143 * (r / r_b)^2.02
+  characteristicImpedanceFactorKzc: number; // K_Zc = 1 - 0.138 * (r / r_b)^2.20
+  elbowArcLengthCompensationMm: number; // L_geom,arc - L_acoust,arc
+  hasCoaxialTurningVanes: boolean;
+  turningVaneCount: number;
+  // Midpoint Side-Branch Helmholtz Quarter-Wave Trap
+  organPipeFundamentalFreqHz: number; // f_pipe,1 = c_0 / (2 * L_eff)
+  trapPositionMidpointMm: number; // x = L_p / 2
+  trapNeckDiameterMm: number;
+  trapNeckPhysicalLengthMm: number;
+  trapNeckEffectiveLengthMm: number; // Ji BEM side-branch polynomial
+  trapCavityVolumeCm3: number;
+  trapTransmissionLossDb: number; // > 20 dB at f_pipe,1
+}
+
+export interface PorousAbsorptionZoningReport {
+  activeModel: 'jca_5param' | 'garai_pompoli_dacron' | 'miki_positive_real' | 'delany_bazley';
+  activeModelLabel: string;
+  bulkDensityKgM3: number;
+  flowResistivityPasM2: number; // sigma
+  normalizedFreqRatioX: number; // X = f / sigma at 250 Hz
+  passivityThresholdXCrit: number; // 0.00633 m^3/kg for Miki, enforced via JCA below 65 Hz
+  isPassivityCompliant: boolean;
+  normalizedImpedanceReal250Hz: number;
+  normalizedImpedanceImag250Hz: number;
+  normalizedWavenumberReal250Hz: number;
+  normalizedWavenumberImag250Hz: number;
+  effectivePhaseSpeed250HzMs: number; // c_eff at 250 Hz (119.2 - 243.3 m/s vs 343 m/s)
+  normalAbsorptionCoeff250Hz: number;
+  normalAbsorptionCoeff1000Hz: number;
+  quarterWaveAntinodeOffsetMm: number; // lambda/4 velocity antinode distance from rigid wall
+  portIntakeKeepOutRadiusMm: number; // R_keepout >= 2.0 * D_port
+  velocityToPressureEnergyRatioEta: number; // eta_{v/p} >= 1.5 in core
+}
+
+export interface ImplicitSdfMonocoqueReport {
+  sminBlendingRadiusMm: number; // k
+  sminSeamFilletThicknessMm: number; // k / 4
+  fglBossSolidDensityPercent: number; // 70 - 100% within R_boss
+  fglCoreRelativeDensityPercent: number; // 15 - 30% in low-stress wall core
+  // 3.5 kN Structural Boss Calibration
+  recommendedInsertSpec: string; // e.g. 'M6 Long-Engagement Brass/Steel Heat-Set in PA12-CF'
+  bossOuterDiameterMm: number; // 2.2 * D_insert
+  concentricPerimeterCount: number; // 6 solid perimeters
+  pilotHoleDiameterMm: number;
+  reliefWellExtraDepthMm: number; // +1.5 mm
+  predictedAxialPullOutForceKn: number; // >= 3.50 kN (vs 0.2-0.4 kN standard M3 PLA)
+  meets35KnRiggingTarget: boolean;
+  // Modal Antinode Granular Particle Damping (PD) Pockets
+  particleDampingPocketCount: number;
+  wallVolumeFractionPercent: number; // 4% to 20%
+  volumetricPackingRatioPercent: number; // 75% (60-85% optimal headspace)
+  dampingImprovementFactor: number; // up to 5.64x (+564% modal damping)
+  // Manifold Dual Contouring & .3MF Export
+  meshingAlgorithm: 'Manifold Dual Contouring (Hermite QEF)';
+  exportFormatSpec: '.3MF Archive with slic3rpe Modifier Volumes';
+  estimatedDualContouringVertices: number;
+}
+
+export interface SubtractiveCncCamLayerSpec {
+  layerName:
+    | 'DRILL_PILOT_M6'
+    | 'POCKET_DADO_6MM'
+    | 'RABBET_DRIVER_FLUSH'
+    | 'CHAMFER_45DEG'
+    | 'THROUGH_CUT';
+  toolpathType: string;
+  recommendedTooling: string;
+  targetZDepthMm: number;
+  cutterOffsetFormula: string;
+}
+
+export interface SubtractiveCncJoineryReport {
+  caliperStockThicknessMm: number; // t_cal
+  engagementDepthMm: number; // d_eng (0.33 to 0.50 t_cal)
+  glueReliefClearanceMm: number; // c_d = 0.5 mm
+  lateralWidthClearanceMm: number; // c_w = 0.15 mm
+  routedDadoWidthMm: number; // t_cal + c_w
+  routedDadoDepthMm: number; // d_eng + c_d
+  matingBraceCutLengthMm: number; // L_in + 2 * d_eng
+  cutterDiameterMm: number; // 6.35 mm (1/4" end mill)
+  dogboneBisectorOffsetMm: number; // R_tool * (1 - 1/sqrt(2)) = 0.930 mm
+  dogboneDiagonalOvercutMm: number; // R_tool * (sqrt(2) - 1) = 1.315 mm
+  maxSafePocketDepthMm: number; // <= 4 * D_cutter
+  dxfLayers: SubtractiveCncCamLayerSpec[];
+}
+
+export interface InternalSubChambersThermalReport {
+  // Exponentially Tapered Nautilus Midrange Spine
+  hasTaperedNautilusSpine: boolean;
+  nautilusLengthMm: number;
+  throatRadiusMm: number; // r_0
+  apexRadiusMm: number; // r_end
+  exponentialFlareConstantAlphaMInv: number; // alpha_t = (1/L) * ln(r_0 / r_end)
+  hornCutoffFreqHz: number; // f_c = alpha_t * c_eff / (2 * pi)
+  gradedFlowResistivityRangePasM2: string; // '3,000 (throat) -> 20,000 (apex) Pa·s/m²'
+  // Hermetic Wire Conduits
+  wireConduitType: string; // 'Co-Printed Ø9mm Wall Conduit + IP68 M16 EPDM Gland + Epoxy Potting Trap'
+  pressureLeakageRisk: 'zero_hermetic';
+  // Oscillating-Flow Convective Thermal Chimney
+  voiceCoilThermalTimeConstantSec: number; // ~15.4 s
+  magnetThermalTimeConstantSec: number; // ~1625 s
+  convectionCoolingCoeffRv: number; // 0.702 Ws/(K*m)
+  oscillatingNusseltMultiplier: number; // e.g. 2.35x heat transfer vs stagnant air
+  thermalCompressionReductionDb: number; // e.g. -1.15 dB reduction in power compression
+}
+
+export interface LeachWrightNonlinearDspReport {
+  // Hilbert Transform Minimum/Excess Phase
+  acousticCenterDelayUs: number; // tau_delay (microseconds)
+  baffleStepPhysicalOffsetMm: number;
+  // Leach & Wright Semi-Inductive Voice-Coil Eddy-Current Model
+  leachL0: number;
+  leachExponentN: number; // typically 0.65 - 0.72
+  wrightKr: number;
+  wrightEr: number;
+  wrightKi: number;
+  wrightEi: number;
+  effectiveInductance100HzMh: number;
+  effectiveInductance1kHzMh: number;
+  effectiveInductance10kHzMh: number;
+  eddyCurrentResistance10kHzOhm: number;
+  // Passive Conjugate & IPC-2152/2221 PCB Specs
+  zobelRzOhm: number;
+  zobelCzUf: number;
+  conjugateNotchResOhm: number;
+  conjugateNotchCrcUf: number;
+  conjugateNotchLrcMh: number;
+  bridgedTAllPassLapUh: number;
+  bridgedTAllPassCapUf: number;
+  ipc2221TraceWidth1OzMm: number;
+  ipc2221TraceWidth2OzMm: number;
+  iec62368CreepageSpacingMm: number;
+  // Active Mixed IIR/FIR & Klippel KCS Limiter
+  firPreRingingMs: number; // < 1.2 ms (below 5-20 ms human pre-masking)
+  totalSystemLatencyMs: number; // ~3.15 ms
+}
+
+export interface MultiphysicsBlueprintReport {
+  karalBraceMass: KaralFokBraceVirtualMassReport;
+  portAeroAndTrap: DeanVortexPortAeroReport;
+  porousAbsorption: PorousAbsorptionZoningReport;
+  implicitSdfMonocoque: ImplicitSdfMonocoqueReport;
+  subtractiveCncJoinery: SubtractiveCncJoineryReport;
+  subChambersAndThermal: InternalSubChambersThermalReport;
+  driverEddyAndNonlinear: LeachWrightNonlinearDspReport;
 }
 
 export interface MaxSplCalculationReport {

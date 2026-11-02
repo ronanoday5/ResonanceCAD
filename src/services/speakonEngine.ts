@@ -1077,11 +1077,28 @@ export function calculateSpeakonReport(
     dishWidthMm = connectorQuantity === 2 ? 116 : 68;
   }
 
-  // Position dish on lower rear panel (avoiding rear port if active)
+  const matSpec = MATERIAL_SPECS[dimensions.material] || MATERIAL_SPECS.baltic_birch_18;
+  const wallT = matSpec.nominalThicknessMm;
+  const intW = Math.max(60, dimensions.externalWidthMm - 2 * wallT);
+  const intH = Math.max(60, dimensions.externalHeightMm - 2 * wallT);
+
+  dishWidthMm = Math.min(dishWidthMm, Math.round(intW * 0.72));
+  dishHeightMm = Math.min(dishHeightMm, Math.round(intH * 0.40));
+
+  // Position dish on rear panel avoiding rear port (whether upper round port or bottom slot port)
   const isRearPort = resolvedPortPlacement === 'rear' && acoustics.alignment === 'ported';
-  const dishCenterYMm = isRearPort
-    ? -Math.round(dimensions.externalHeightMm * 0.28)
-    : -Math.round(dimensions.externalHeightMm * 0.22);
+  const isRearSlotPort = isRearPort && acoustics.portType === 'slot';
+  const dishCenterYMm = isRearSlotPort
+    ? Math.min(
+        Math.floor(intH / 2 - dishHeightMm / 2 - 14),
+        Math.round(intH * 0.18)
+      )
+    : Math.max(
+        -Math.floor(intH / 2 - dishHeightMm / 2 - 14),
+        isRearPort
+          ? -Math.round(dimensions.externalHeightMm * 0.28)
+          : -Math.round(dimensions.externalHeightMm * 0.22)
+      );
 
   const mountingHolesPerConnector = buildMountingHolesPerConnector(connectorModel);
   const pinAssignments = buildStandardPinAssignments(

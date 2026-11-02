@@ -91,14 +91,23 @@ export function generateCutList(
   const isRearPort = layout?.resolvedPortPlacement === 'rear' && acoustics.alignment === 'ported';
   const rearPortComp = layout?.components.find((c) => c.panel === 'rear' && c.role === 'port');
   const spk = results.speakonReport;
+  const tvReport = results.thermalVentReport;
 
   const spkCutoutSummary = spk
     ? `Neutrik ${spk.partNumber} (${spk.connectorQuantity}x ${spk.flangeType}): Pocket ${spk.dishWidthMm}x${spk.dishHeightMm}mm (${spk.dishPocketDepthMm}mm recess) @ Y=${spk.dishCenterYMm}mm; ${spk.connectorQuantity}x Ø${spk.cutoutBoreDiameterMm}mm through-bores (${spk.connectorSpacingCenterMm}mm C-C) + ${spk.mountingHolesPerConnector.length * spk.connectorQuantity}x Ø${spk.mountingHolesPerConnector[0]?.diameterMm ?? 3.2}mm M3 holes.`
     : 'Recessed speakON terminal dish pocket @ Y=-100mm.';
 
-  const rearMachiningNotes = isRearPort && rearPortComp
-    ? `CNC bore: Rear Parametric Port Cutout @ Y=+${Math.round(rearPortComp.centerY)}mm. ${spkCutoutSummary}`
-    : `CNC bore: ${spkCutoutSummary}`;
+  const thermalVentSummary = tvReport?.enabled
+    ? `CNC Thermal Louvers (${tvReport.powerTierLabel}): ${tvReport.slotCount}x stadium through-slots (${tvReport.slotWidthMm}x${tvReport.slotHeightMm}mm, R${tvReport.slotCornerRadiusMm}mm, ${tvReport.totalNetFreeAreaCm2} cm² net area, -${tvReport.voiceCoilTempDropC}°C coil cooling).`
+    : '';
+
+  const rearMachiningNotes = [
+    ...(isRearPort && rearPortComp
+      ? [`CNC bore: Rear Parametric Port Cutout @ Y=+${Math.round(rearPortComp.centerY)}mm.`]
+      : []),
+    `CNC bore: ${spkCutoutSummary}`,
+    ...(thermalVentSummary ? [thermalVentSummary] : []),
+  ].join(' ');
 
   const rearItem: CutListItem = {
     id: 'panel_rear',
@@ -113,7 +122,7 @@ export function generateCutList(
     materialName: material.name,
     weightKg: Math.round(rearWeight * 100) / 100,
     estimatedCostUsd: calcPanelCost(rearW, rearH, 1),
-    cutNotes: `Cut ${rearW}mm x ${rearH}mm. Inset between side and top/bottom panels.`,
+    cutNotes: `Cut ${rearW}mm x ${rearH}mm. Inset between side and top/bottom panels.${tvReport?.enabled ? ` Includes ${tvReport.slotCount}x Pe-scaled thermal ventilation slots.` : ''}`,
     machiningNotes: rearMachiningNotes,
   };
   cutList.push(rearItem);
@@ -128,17 +137,46 @@ export function generateCutList(
     material: material.name,
     weightKg: rearItem.weightKg,
     acousticRole: isRearPort
-      ? `Houses rear-firing custom parametric port and recessed Neutrik ${spk?.partNumber || 'NL4MP'} I/O dish.`
-      : `Supports passive crossover PCB stack and recessed Neutrik ${spk?.partNumber || 'NL4MP'} (${spk?.poleCount || 4}-Pole) I/O connector dish.`,
-    assemblyNotes: `Glued and clamped airtight with ${spk?.gasketPartNumber || 'EPDM'} perimeter sealing gasket.`,
+      ? `Houses rear-firing custom parametric port, recessed Neutrik ${spk?.partNumber || 'NL4MP'} I/O dish${tvReport?.enabled ? `, and ${tvReport.slotCount}x convective thermal ventilation slots` : ''}.`
+      : `Supports passive crossover PCB stack, recessed Neutrik ${spk?.partNumber || 'NL4MP'} (${spk?.poleCount || 4}-Pole) I/O connector dish${tvReport?.enabled ? `, and ${tvReport.slotCount}x driver-Pe-scaled convective thermal ventilation slots` : ''}.`,
+    assemblyNotes: `Glued and clamped airtight with ${spk?.gasketPartNumber || 'EPDM'} perimeter sealing gasket.${tvReport?.enabled ? ` ${tvReport.hermeticSealDescription}.` : ''}`,
     machiningOperations: [
       ...(isRearPort && rearPortComp
         ? [`Rear parametric port cutout @ Y=+${Math.round(rearPortComp.centerY)}mm`]
         : []),
       spkCutoutSummary,
+      ...(tvReport?.enabled
+        ? [
+            `THROUGH_CUT: ${tvReport.slotCount}x stadium thermal ventilation slots (${tvReport.slotWidthMm}×${tvReport.slotHeightMm}mm, R=${tvReport.slotCornerRadiusMm}mm) scaled for ${tvReport.driverContinuousPowerW}W RMS driver rating`,
+          ]
+        : []),
       '4x M4 standoff pilot holes for crossover PCB stack mounting',
     ],
   };
+
+  if (tvReport?.enabled) {
+    partMetadataMap['thermal_vent_assembly'] = {
+      id: 'thermal_vent_assembly',
+      name: `Parametric Rear Thermal Ventilation Array (${tvReport.slotCount}x Louvers)`,
+      spatialLabel: 'Vent-Thermal-01',
+      spatialLocation: 'Rear Wall Intake / Exhaust',
+      category: 'hardware',
+      dimensionsMm: {
+        w: tvReport.bankEnvelopeWidthMm,
+        h: tvReport.bankEnvelopeHeightMm * 2,
+        d: t + 14,
+      },
+      material: '6061-T6 Black Anodized Aluminum Louver Bezel + Hermetic Finned Heat Exchanger',
+      weightKg: Math.round((0.18 + tvReport.slotCount * 0.035) * 100) / 100,
+      estimatedCostUsd: Math.round((14 + tvReport.slotCount * 1.75) * 100) / 100,
+      acousticRole: `Dissipates ${tvReport.thermalDissipationLoadW}W thermal load (${tvReport.driverContinuousPowerW}W RMS driver rating), reducing voice-coil steady-state temperature by -${tvReport.voiceCoilTempDropC}°C and saving +${tvReport.powerCompressionSavedDb} dB of thermal compression.`,
+      assemblyNotes: tvReport.hermeticSealDescription,
+      machiningOperations: [
+        `${tvReport.intakeSlotCount}x Lower Cool-Air Intake Slots + ${tvReport.exhaustSlotCount}x Upper Buoyancy Exhaust Slots (${tvReport.slotWidthMm}×${tvReport.slotHeightMm}mm)`,
+        `Net Free Ventilation Area: ${tvReport.totalNetFreeAreaCm2} cm² (${tvReport.convectiveVolumeFlowLs} L/s @ ${tvReport.buoyancyAirflowVelocityMs} m/s stack velocity)`,
+      ],
+    };
+  }
 
   // 2.5 Neutrik speakON Input/Output Terminal Dish Assembly
   if (spk) {
@@ -332,8 +370,12 @@ export function generateCutList(
     ],
   };
 
-  // 5. Internal Matrix Window Brace
-  const braceW = Math.max(50, W - 2 * t);
+  // 5. Internal Matrix Window Brace (Caliper-Compensated Dado Joinery & Karal-Fok Virtual Mass)
+  const bpJoinery = results.multiphysicsBlueprint?.subtractiveCncJoinery;
+  const bpBraceMass = results.multiphysicsBlueprint?.karalBraceMass;
+  const bpSubChamber = results.multiphysicsBlueprint?.subChambersAndThermal;
+  const nominalBraceSpanW = Math.max(50, W - 2 * t);
+  const braceW = bpJoinery ? Math.round(bpJoinery.matingBraceCutLengthMm * 10) / 10 : nominalBraceSpanW;
   const braceD = Math.max(50, D - baffleT - t);
   const braceWeight = ((braceW * braceD * t) * 1e-9) * material.densityKgM3 * 0.55;
   const braceQuantity = acoustics.bracingLevel === 'heavy' ? 2 : 1;
@@ -341,6 +383,12 @@ export function generateCutList(
   for (let b = 1; b <= braceQuantity; b++) {
     const braceSpatialLabel = `Brace-Inner-0${b}`;
     const bracePartId = b === 1 ? 'brace_window' : `brace_window_${b}`;
+    const dadoNote = bpJoinery
+      ? `W_dado=${bpJoinery.routedDadoWidthMm}mm × D_dado=${bpJoinery.routedDadoDepthMm}mm (√2 dogbone offset d_center=${bpJoinery.dogboneBisectorOffsetMm}mm)`
+      : '6.0mm dado engagement';
+    const karalNote = bpBraceMass
+      ? `Karal-Fok Ψ(φ)=${bpBraceMass.jaouenChevillotteInteractionFactorPsi.toFixed(3)}, Δf_b=${bpBraceMass.tuningFrequencyShiftPercent.toFixed(2)}% (port pre-shortened -${bpBraceMass.portPreShorteningCompensationMm.toFixed(1)}mm)`
+      : 'Karal-Fok virtual acoustic mass compensated';
 
     const singleBraceItem: CutListItem = {
       id: bracePartId,
@@ -355,8 +403,8 @@ export function generateCutList(
       materialName: material.name,
       weightKg: Math.round(braceWeight * 100) / 100,
       estimatedCostUsd: calcPanelCost(braceW, braceD, 1),
-      cutNotes: `Cut ${braceW}mm x ${braceD}mm perimeter. CNC 4x radiused window cutouts.`,
-      machiningNotes: 'Four rounded rectangular acoustic pass-through windows with 25mm corner radius fillets.',
+      cutNotes: `Cut ${braceW}mm x ${braceD}mm outer tenon perimeter (${dadoNote}). CNC 4x radiused airflow relief apertures + 2x Ø22mm grommeted cable routing channels.`,
+      machiningNotes: `Four rounded rectangular acoustic airflow relief windows (${karalNote}) + 2x Ø22mm chamfered cable routing channels with silicone vibration-damping grommets.`,
     };
     cutList.push(singleBraceItem);
 
@@ -369,25 +417,29 @@ export function generateCutList(
       dimensionsMm: { w: braceW, h: t, d: braceD },
       material: material.name,
       weightKg: singleBraceItem.weightKg,
-      acousticRole: `Elevates fundamental panel resonant modes f_{1,1} above passband and suppresses cabinet wall bulging under high acoustic SPL.`,
-      assemblyNotes: 'Dado interlock into left, right, and rear wall grooves with polyurethane wood adhesive.',
+      acousticRole: `Elevates fundamental panel resonant modes f_{1,1} above passband, suppresses cabinet wall bulging, equalizes sub-chamber dynamic backpressure via airflow relief apertures (${karalNote}), and decouples wiring via dedicated cable channels.`,
+      assemblyNotes: `Dado interlock (${dadoNote}) into left, right, and rear wall grooves with polyurethane wood adhesive. Press-fit silicone grommets into cable channels before harness pull.`,
       machiningOperations: [
-        'CNC router 4x radiused acoustic window apertures',
-        '25mm corner radius interior fillets',
+        `POCKET_DADO_6MM: ${dadoNote}`,
+        'THROUGH_CUT: 4x radiused acoustic airflow relief apertures (sub-chamber pressure equalization)',
+        'DRILL_PILOT_M6 / THROUGH_CUT: 2x Ø22mm cable routing channels for twisted-pair speaker harness',
+        'CHAMFER_45DEG: Dual-sided 45° aerodynamic aperture edge break & √2 minimal-visibility dogbone corner relief',
       ],
     };
   }
 
-  // 6. Midrange Sealed Sub-Chamber (if 3-Way)
+  // 6. Midrange Exponentially Tapered Nautilus Sub-Chamber (if 3-Way)
   if (topology === 'three_way') {
-    const midBoxW = Math.max(120, midrange.frameOuterDiameterMm + 20);
-    const midBoxH = Math.max(120, midrange.frameOuterDiameterMm + 20);
-    const midBoxD = 140;
-    const midChamberWeight = ((midBoxW * midBoxH * t * 4) * 1e-9) * material.densityKgM3;
+    const midBoxW = Math.max(120, midrange.frameOuterDiameterMm + 16);
+    const midBoxH = Math.max(120, midrange.frameOuterDiameterMm + 16);
+    const midBoxD = bpSubChamber ? Math.round(bpSubChamber.nautilusLengthMm) : 140;
+    const midChamberWeight = ((midBoxW * midBoxH * t * 3.2) * 1e-9) * material.densityKgM3;
+    const flareAlpha = bpSubChamber ? bpSubChamber.exponentialFlareConstantAlphaMInv.toFixed(2) : '18.50';
+    const cutoffFc = bpSubChamber ? bpSubChamber.hornCutoffFreqHz.toFixed(0) : '510';
 
     const midChamberItem: CutListItem = {
       id: 'midrange_chamber',
-      name: 'Midrange Sealed Rear Enclosure Chamber',
+      name: 'Midrange Nautilus Exponential Absorber Sub-Chamber',
       spatialLabel: 'Chamber-Mid-01',
       spatialLocation: 'Isolated Mid Chamber',
       type: 'midrange_chamber',
@@ -398,23 +450,27 @@ export function generateCutList(
       materialName: material.name,
       weightKg: Math.round(midChamberWeight * 100) / 100,
       estimatedCostUsd: calcPanelCost(midBoxW, midBoxH, 4),
-      cutNotes: `Airtight isolated rear enclosure (${results.midrangeChamberVolumeLiters}L volume) isolating midrange driver from woofer pressure waves.`,
-      machiningNotes: 'Glue and seal 100% airtight with silicone mastic behind midrange baffle cutout.',
+      cutNotes: `Exponentially tapered reverse-horn sub-enclosure S(x)=S₀·exp(-2α_t·x) with α_t=${flareAlpha} m⁻¹, f_c=${cutoffFc} Hz (${results.midrangeChamberVolumeLiters}L net volume) isolating midrange driver from woofer pressure waves.`,
+      machiningNotes: 'Co-printed or CNC lathe-turned exponentially tapered Nautilus spine with graded metamaterial damping rings (3,000 → 20,000 Pa·s/m²) and IP68 hermetic epoxy wire gland.',
     };
     cutList.push(midChamberItem);
 
     partMetadataMap['midrange_chamber'] = {
       id: 'midrange_chamber',
-      name: 'Isolated Midrange Acoustic Chamber',
+      name: 'Exponentially Tapered Nautilus Midrange Sub-Chamber',
       spatialLabel: 'Chamber-Mid-01',
       spatialLocation: 'Isolated Mid Chamber',
       category: 'panel',
       dimensionsMm: { w: midBoxW, h: midBoxH, d: midBoxD },
       material: material.name,
       weightKg: midChamberItem.weightKg,
-      acousticRole: 'Protects midrange cone from severe internal back-pressure modulation created by woofer excursion.',
-      assemblyNotes: 'Interlock into front baffle rear face with dacron polyfill stuffing.',
-      machiningOperations: ['Precision miters on sub-chamber box sides'],
+      acousticRole: `Prevents standing-wave reflections onto the midrange diaphragm via reverse exponential flare S(x)=S₀·e^(-2·${flareAlpha}·x) (cutoff ${cutoffFc} Hz) and isolates the cone from high-SPL woofer back-wave modulation.`,
+      assemblyNotes: 'Seat into front baffle rear compression gasket; route midrange twisted pair through IP68 gland + 15mm two-part epoxy potting trap.',
+      machiningOperations: [
+        `Reverse-horn exponential taper profile S(x)=S₀·exp(-2·${flareAlpha}·x), spine length ${midBoxD}mm`,
+        'Spatially graded fibrous packing (3,000 Pa·s/m² throat to 20,000 Pa·s/m² termination apex)',
+        'Hermetic Ø6mm rear conduit port with IP68 strain-relief gland and epoxy potting cup',
+      ],
     };
   }
 

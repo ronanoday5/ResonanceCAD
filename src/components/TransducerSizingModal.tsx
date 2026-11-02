@@ -260,6 +260,7 @@ export const TransducerSizingModal: React.FC<TransducerSizingModalProps> = ({
                   >
                     <option value="ported">Vented / Bass Reflex</option>
                     <option value="sealed">Sealed (Acoustic Suspension)</option>
+                    <option value="bandpass4">4th-Order Bandpass (Dual Chamber)</option>
                   </select>
                 </div>
                 <div>

@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { CutListItem, EnclosureDimensions } from '../types/loudspeaker.ts';
 import { exportCutListToCSV } from '../services/cutlistGenerator.ts';
-import { Download, FileText, Printer, Ruler, Eye, Compass, Layers, CheckCircle2, Info } from 'lucide-react';
+import { Download, FileText, Printer, Ruler, Eye, Compass, Layers, CheckCircle2, Info, Grid } from 'lucide-react';
 import { useUnits } from '../context/UnitContext.tsx';
 
 interface CutListSheetProps {
@@ -14,6 +14,18 @@ interface CutListSheetProps {
 }
 
 type SpatialFilterCategory = 'all' | 'baffle' | 'exterior_walls' | 'braces' | 'ports_internal';
+type SheetStockPreset = '1525x1525' | '2440x1220';
+
+interface NestedPanelRect {
+  instanceKey: string;
+  item: CutListItem;
+  sheetIndex: number;
+  xMm: number;
+  yMm: number;
+  wMm: number;
+  hMm: number;
+  hasDogboneRelief: boolean;
+}
 
 export const CutListSheet: React.FC<CutListSheetProps> = ({
   cutList,
@@ -26,6 +38,13 @@ export const CutListSheet: React.FC<CutListSheetProps> = ({
   const { unitSystem, setUnitSystem, formatLength } = useUnits();
   const [activeFilter, setActiveFilter] = useState<SpatialFilterCategory>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [sheetPreset, setSheetPreset] = useState<SheetStockPreset>('1525x1525');
+  const [showDogboneFillets, setShowDogboneFillets] = useState<boolean>(true);
+  const [showNestingDiagram, setShowNestingDiagram] = useState<boolean>(true);
+
+  const sheetDims = sheetPreset === '1525x1525'
+    ? { widthMm: 1525, heightMm: 1525, label: '5×5 ft Baltic Birch (1525×1525 mm)' }
+    : { widthMm: 2440, heightMm: 1220, label: '8×4 ft Standard Sheet (2440×1220 mm)' };
 
   const totalParts = cutList.reduce((acc, p) => acc + p.quantity, 0);
   const totalWeight = cutList.reduce((acc, p) => acc + p.weightKg, 0);
@@ -36,9 +55,79 @@ export const CutListSheet: React.FC<CutListSheetProps> = ({
   }, 0);
   const totalAreaSqFt = totalAreaM2 * 10.7639;
 
-  // Percentage of standard 5x5 ft (1525 x 1525 mm = 2.325 m2) Baltic Birch sheet
-  const standardSheetAreaM2 = 1.525 * 1.525;
+  // Percentage of selected standard sheet stock
+  const standardSheetAreaM2 = (sheetDims.widthMm * sheetDims.heightMm) * 1e-6;
   const sheetYieldFraction = (totalAreaM2 / standardSheetAreaM2) * 100;
+
+  // 2D Guillotine / Shelf Nesting Algorithm with 6.35mm CNC router bit kerf + 12mm perimeter margin
+  const nestingLayout = useMemo(() => {
+    const kerfMm = 6.35; // 1/4" compression spiral bit kerf
+    const marginMm = 12;
+    const expandedPanels: Array<{ item: CutListItem; copyIndex: number; wMm: number; hMm: number }> = [];
+
+    cutList.forEach((item) => {
+      for (let q = 0; q < item.quantity; q++) {
+        const w = Math.max(item.widthMm, item.lengthMm);
+        const h = Math.min(item.widthMm, item.lengthMm);
+        expandedPanels.push({ item, copyIndex: q + 1, wMm: w, hMm: h });
+      }
+    });
+
+    // Sort descending by height then width for optimal shelf packing
+    expandedPanels.sort((a, b) => b.hMm - a.hMm || b.wMm - a.wMm);
+
+    const packedRects: NestedPanelRect[] = [];
+    let currentSheet = 0;
+    let cursorX = marginMm;
+    let cursorY = marginMm;
+    let shelfHeight = 0;
+
+    expandedPanels.forEach((panel, idx) => {
+      const fitW = Math.min(panel.wMm, sheetDims.widthMm - marginMm * 2);
+      const fitH = Math.min(panel.hMm, sheetDims.heightMm - marginMm * 2);
+
+      if (cursorX + fitW > sheetDims.widthMm - marginMm) {
+        // Advance to next row shelf
+        cursorX = marginMm;
+        cursorY += shelfHeight + kerfMm;
+        shelfHeight = 0;
+      }
+
+      if (cursorY + fitH > sheetDims.heightMm - marginMm) {
+        // Advance to new sheet
+        currentSheet += 1;
+        cursorX = marginMm;
+        cursorY = marginMm;
+        shelfHeight = 0;
+      }
+
+      const hasDogbone =
+        dimensions.jointType === 'rabbet' ||
+        panel.item.type === 'window_brace' ||
+        panel.item.type === 'shelf_brace' ||
+        panel.item.type === 'baffle';
+
+      packedRects.push({
+        instanceKey: `${panel.item.id}-${panel.copyIndex}-${idx}`,
+        item: panel.item,
+        sheetIndex: currentSheet,
+        xMm: cursorX,
+        yMm: cursorY,
+        wMm: fitW,
+        hMm: fitH,
+        hasDogboneRelief: hasDogbone,
+      });
+
+      cursorX += fitW + kerfMm;
+      shelfHeight = Math.max(shelfHeight, fitH);
+    });
+
+    return {
+      rects: packedRects,
+      sheetCount: Math.max(1, currentSheet + 1),
+      kerfMm,
+    };
+  }, [cutList, sheetDims.widthMm, sheetDims.heightMm, dimensions.jointType]);
 
   // Category classifier for quick filtering
   const getFilterCategory = (item: CutListItem): SpatialFilterCategory => {
@@ -222,10 +311,10 @@ export const CutListSheet: React.FC<CutListSheetProps> = ({
         </div>
 
         <div className="bg-slate-900/80 border border-slate-800 p-3 rounded-lg">
-          <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">Sheet Yield (5×5 ft)</span>
+          <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">Sheet Yield ({sheetPreset === '1525x1525' ? '5×5 ft' : '8×4 ft'})</span>
           <span className="text-lg font-bold font-mono text-amber-300">{sheetYieldFraction.toFixed(0)}%</span>
           <span className="text-[10px] text-slate-400 font-mono block mt-0.5">
-            {sheetYieldFraction <= 100 ? 'Fits on 1 standard sheet' : 'Requires 2+ sheets'}
+            {nestingLayout.sheetCount === 1 ? 'Fits on 1 standard sheet' : `Nested across ${nestingLayout.sheetCount} sheets`}
           </span>
         </div>
 
@@ -236,6 +325,230 @@ export const CutListSheet: React.FC<CutListSheetProps> = ({
             {(totalWeight * 2.20462).toFixed(1)} lbs dry
           </span>
         </div>
+      </div>
+
+      {/* 2D CNC Sheet-Stock Nesting & Dogbone Relief Layout */}
+      <div className="mb-4 bg-slate-900/70 border border-slate-800 rounded-xl p-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-800/80">
+          <div className="flex items-center gap-2">
+            <Grid className="w-4 h-4 text-cyan-400" />
+            <h4 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-200">
+              2D CNC Sheet-Stock Nesting &amp; Dogbone Corner Relief Map
+            </h4>
+            <span className="px-2 py-0.5 rounded bg-emerald-950/80 border border-emerald-700/60 text-[10px] font-mono text-emerald-300">
+              6.35mm (1/4&quot;) Kerf • Ø3.175mm Dogbone Fillets
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center bg-slate-950 border border-slate-800 rounded p-0.5 text-[10px] font-mono">
+              <button
+                type="button"
+                onClick={() => setSheetPreset('1525x1525')}
+                className={`px-2 py-1 rounded transition cursor-pointer ${
+                  sheetPreset === '1525x1525'
+                    ? 'bg-cyan-600 text-white font-bold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                1525×1525 (5×5&apos; Birch)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSheetPreset('2440x1220')}
+                className={`px-2 py-1 rounded transition cursor-pointer ${
+                  sheetPreset === '2440x1220'
+                    ? 'bg-cyan-600 text-white font-bold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                2440×1220 (8×4&apos; MDF)
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowDogboneFillets((v) => !v)}
+              className={`px-2.5 py-1 rounded text-[10px] font-mono font-bold border transition cursor-pointer ${
+                showDogboneFillets
+                  ? 'bg-amber-950/80 border-amber-500/60 text-amber-300'
+                  : 'bg-slate-950 border-slate-800 text-slate-400'
+              }`}
+            >
+              {showDogboneFillets ? 'Dogbone Relief: ON' : 'Dogbone Relief: OFF'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowNestingDiagram((v) => !v)}
+              className="px-2.5 py-1 rounded text-[10px] font-mono bg-slate-950 border border-slate-800 text-slate-300 hover:text-white cursor-pointer"
+            >
+              {showNestingDiagram ? 'Hide Diagram' : 'Show Diagram'}
+            </button>
+          </div>
+        </div>
+
+        {showNestingDiagram && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {Array.from({ length: nestingLayout.sheetCount }).map((_, sheetIdx) => {
+              const sheetRects = nestingLayout.rects.filter((r) => r.sheetIndex === sheetIdx);
+              return (
+                <div
+                  key={`sheet-${sheetIdx}`}
+                  className="bg-slate-950 border border-slate-800/90 rounded-lg p-3 flex flex-col gap-2"
+                >
+                  <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
+                    <span>
+                      SHEET #{sheetIdx + 1} — <strong className="text-slate-200">{sheetDims.label}</strong>
+                    </span>
+                    <span className="text-cyan-400">{sheetRects.length} nested panels</span>
+                  </div>
+
+                  <div className="w-full overflow-hidden rounded border border-slate-800 bg-[#070b14]">
+                    <svg
+                      viewBox={`0 0 ${sheetDims.widthMm} ${sheetDims.heightMm}`}
+                      className="w-full h-auto max-h-64 block"
+                    >
+                      {/* Raw Sheet Stock Boundary */}
+                      <rect
+                        x={0}
+                        y={0}
+                        width={sheetDims.widthMm}
+                        height={sheetDims.heightMm}
+                        fill="#0f172a"
+                        stroke="#334155"
+                        strokeWidth={8}
+                      />
+
+                      {/* Wood Grain Direction Reference Lines */}
+                      {Array.from({ length: 7 }).map((__, gIdx) => {
+                        const yLine = ((gIdx + 1) * sheetDims.heightMm) / 8;
+                        return (
+                          <line
+                            key={`grain-${gIdx}`}
+                            x1={20}
+                            y1={yLine}
+                            x2={sheetDims.widthMm - 20}
+                            y2={yLine}
+                            stroke="#1e293b"
+                            strokeWidth={2}
+                            strokeDasharray="18 12"
+                          />
+                        );
+                      })}
+
+                      {/* Nested Panel Cutouts */}
+                      {sheetRects.map((rect) => {
+                        const isSelected = selectedPartId === rect.item.id;
+                        const fillMap: Record<string, string> = {
+                          baffle: isSelected ? '#06b6d4' : '#083344',
+                          top: isSelected ? '#0284c7' : '#0c4a6e',
+                          bottom: isSelected ? '#0284c7' : '#0c4a6e',
+                          left_side: isSelected ? '#2563eb' : '#1e3a8a',
+                          right_side: isSelected ? '#2563eb' : '#1e3a8a',
+                          rear: isSelected ? '#4f46e5' : '#312e81',
+                          window_brace: isSelected ? '#10b981' : '#064e3b',
+                          shelf_brace: isSelected ? '#10b981' : '#064e3b',
+                          port_board: isSelected ? '#a855f7' : '#4c1d95',
+                          midrange_chamber: isSelected ? '#a855f7' : '#4c1d95',
+                        };
+                        const fill = fillMap[rect.item.type] || (isSelected ? '#f59e0b' : '#451a03');
+                        const stroke = isSelected ? '#22d3ee' : '#38bdf8';
+                        const dogboneRadius = 14;
+
+                        return (
+                          <g
+                            key={rect.instanceKey}
+                            onClick={() => onSelectPart(rect.item.id)}
+                            onMouseEnter={() => onHoverPart?.(rect.item.id)}
+                            onMouseLeave={() => onHoverPart?.(null)}
+                            className="cursor-pointer transition-opacity hover:opacity-90"
+                          >
+                            <rect
+                              x={rect.xMm}
+                              y={rect.yMm}
+                              width={rect.wMm}
+                              height={rect.hMm}
+                              fill={fill}
+                              fillOpacity={isSelected ? 0.85 : 0.65}
+                              stroke={stroke}
+                              strokeWidth={isSelected ? 8 : 4}
+                            />
+
+                            {/* CNC Dogbone / T-Bone Corner Relief Fillets */}
+                            {showDogboneFillets && rect.hasDogboneRelief && (
+                              <>
+                                <circle
+                                  cx={rect.xMm + dogboneRadius}
+                                  cy={rect.yMm + dogboneRadius}
+                                  r={dogboneRadius}
+                                  fill="#090d16"
+                                  stroke="#f59e0b"
+                                  strokeWidth={3}
+                                />
+                                <circle
+                                  cx={rect.xMm + rect.wMm - dogboneRadius}
+                                  cy={rect.yMm + dogboneRadius}
+                                  r={dogboneRadius}
+                                  fill="#090d16"
+                                  stroke="#f59e0b"
+                                  strokeWidth={3}
+                                />
+                                <circle
+                                  cx={rect.xMm + dogboneRadius}
+                                  cy={rect.yMm + rect.hMm - dogboneRadius}
+                                  r={dogboneRadius}
+                                  fill="#090d16"
+                                  stroke="#f59e0b"
+                                  strokeWidth={3}
+                                />
+                                <circle
+                                  cx={rect.xMm + rect.wMm - dogboneRadius}
+                                  cy={rect.yMm + rect.hMm - dogboneRadius}
+                                  r={dogboneRadius}
+                                  fill="#090d16"
+                                  stroke="#f59e0b"
+                                  strokeWidth={3}
+                                />
+                              </>
+                            )}
+
+                            {/* Spatial Label & Dimensions inside Nested Rect */}
+                            {rect.wMm > 110 && rect.hMm > 75 && (
+                              <>
+                                <text
+                                  x={rect.xMm + rect.wMm / 2}
+                                  y={rect.yMm + rect.hMm / 2 - 8}
+                                  textAnchor="middle"
+                                  fill="#f8fafc"
+                                  fontSize={Math.min(34, Math.max(18, rect.wMm * 0.08))}
+                                  fontFamily="monospace"
+                                  fontWeight="bold"
+                                >
+                                  {rect.item.spatialLabel}
+                                </text>
+                                <text
+                                  x={rect.xMm + rect.wMm / 2}
+                                  y={rect.yMm + rect.hMm / 2 + 24}
+                                  textAnchor="middle"
+                                  fill="#bae6fd"
+                                  fontSize={Math.min(26, Math.max(14, rect.wMm * 0.06))}
+                                  fontFamily="monospace"
+                                >
+                                  {Math.round(rect.wMm)}×{Math.round(rect.hMm)}
+                                </text>
+                              </>
+                            )}
+                          </g>
+                        );
+                      })}
+                    </svg>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Spatial Category Filter Chips & Search Bar */}

@@ -58,6 +58,7 @@ import {
   Eye,
   EyeOff,
   Feather,
+  Flame,
   Info,
   Layers,
   LineChart,
@@ -67,6 +68,7 @@ import {
   Sliders,
   Sparkles,
   Volume2,
+  Waves,
   Wind,
   Wrench,
   X,
@@ -1015,10 +1017,10 @@ export const ControlDock: React.FC<ControlDockProps> = ({
                       <label className="text-[10px] font-mono uppercase tracking-wider text-slate-400 block">
                         Box Alignment
                       </label>
-                      <div className="grid grid-cols-2 gap-1.5">
+                      <div className="grid grid-cols-3 gap-1.5">
                         <button
                           onClick={() => setAcoustics((p) => ({ ...p, alignment: 'ported' }))}
-                          className={`py-1.5 px-2 rounded-lg text-xs font-medium transition cursor-pointer ${
+                          className={`py-1.5 px-2 rounded-lg text-[11px] font-medium transition cursor-pointer ${
                             acoustics.alignment === 'ported'
                               ? 'bg-cyan-600 text-white font-semibold shadow-sm'
                               : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
@@ -1028,7 +1030,7 @@ export const ControlDock: React.FC<ControlDockProps> = ({
                         </button>
                         <button
                           onClick={() => setAcoustics((p) => ({ ...p, alignment: 'sealed' }))}
-                          className={`py-1.5 px-2 rounded-lg text-xs font-medium transition cursor-pointer ${
+                          className={`py-1.5 px-2 rounded-lg text-[11px] font-medium transition cursor-pointer ${
                             acoustics.alignment === 'sealed'
                               ? 'bg-cyan-600 text-white font-semibold shadow-sm'
                               : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
@@ -1036,7 +1038,71 @@ export const ControlDock: React.FC<ControlDockProps> = ({
                         >
                           Sealed Box
                         </button>
+                        <button
+                          onClick={() => setAcoustics((p) => ({ ...p, alignment: 'bandpass4' }))}
+                          className={`py-1.5 px-2 rounded-lg text-[11px] font-medium transition cursor-pointer ${
+                            acoustics.alignment === 'bandpass4'
+                              ? 'bg-cyan-600 text-white font-semibold shadow-sm'
+                              : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          4th-Order BP
+                        </button>
                       </div>
+                      {acoustics.alignment === 'bandpass4' && (
+                        <div className="grid grid-cols-2 gap-2 pt-2 bg-slate-900/60 border border-slate-800/80 rounded-lg p-2 font-mono text-[10px]">
+                          <div>
+                            <div className="flex justify-between text-slate-400 mb-0.5">
+                              <span>Front V_f:</span>
+                              <span className="text-cyan-300 font-bold">
+                                {results.subcategoryTelemetry?.bandpassFrontVbLiters ?? 45} L
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min="10"
+                              max="200"
+                              value={
+                                acoustics.bandpassFrontVbLiters ??
+                                results.subcategoryTelemetry?.bandpassFrontVbLiters ??
+                                45
+                              }
+                              onChange={(e) =>
+                                setAcoustics((p) => ({
+                                  ...p,
+                                  bandpassFrontVbLiters: Number(e.target.value),
+                                }))
+                              }
+                              className="w-full h-1.5 rounded-lg appearance-none bg-slate-800 accent-cyan-400 cursor-pointer"
+                            />
+                          </div>
+                          <div>
+                            <div className="flex justify-between text-slate-400 mb-0.5">
+                              <span>Rear V_r:</span>
+                              <span className="text-emerald-300 font-bold">
+                                {results.subcategoryTelemetry?.bandpassRearVbLiters ?? 85} L
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min="15"
+                              max="300"
+                              value={
+                                acoustics.bandpassRearVbLiters ??
+                                results.subcategoryTelemetry?.bandpassRearVbLiters ??
+                                85
+                              }
+                              onChange={(e) =>
+                                setAcoustics((p) => ({
+                                  ...p,
+                                  bandpassRearVbLiters: Number(e.target.value),
+                                }))
+                              }
+                              className="w-full h-1.5 rounded-lg appearance-none bg-slate-800 accent-emerald-400 cursor-pointer"
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {/* Driver Electrical Impedance Profile Telemetry Card */}
@@ -2395,6 +2461,208 @@ export const ControlDock: React.FC<ControlDockProps> = ({
                         </div>
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* CARD: PROCEDURAL SCHROEDER QRD 1D & SKYLINE 2D DIFFUSER ENGINE */}
+                {results.diffuserReport && (
+                  <div
+                    id="section-procedural-diffuser"
+                    className={`bg-slate-950/70 border p-3 rounded-lg space-y-3 font-mono transition-all ${
+                      focusedSectionId === 'section-procedural-diffuser'
+                        ? 'border-indigo-400 ring-1 ring-indigo-500/50'
+                        : 'border-indigo-800/80'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
+                      <div className="flex items-center gap-2">
+                        <div className="p-1 rounded bg-indigo-950/80 border border-indigo-700/60 text-indigo-400">
+                          <Waves className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-mono font-bold uppercase tracking-wider text-slate-200">
+                              Schroeder QRD / Skyline Diffuser
+                            </span>
+                            <span
+                              className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase border ${
+                                results.diffuserReport.enabled
+                                  ? 'bg-indigo-950 text-indigo-300 border-indigo-600/80'
+                                  : 'bg-slate-900 text-slate-400 border-slate-700'
+                              }`}
+                            >
+                              {results.diffuserReport.enabled ? 'ACTIVE' : 'BYPASSED'}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-slate-400 block">
+                            ISO 17497 Number-Theoretic Back-Wave Scattering ({results.diffuserReport.typeLabel})
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextEnabled = !results.diffuserReport?.enabled;
+                          const nextCfg = {
+                            enabled: nextEnabled,
+                            type: acoustics.diffuserConfig?.type || 'qrd_1d',
+                            targetWall: acoustics.diffuserConfig?.targetWall || 'rear',
+                            primeN: acoustics.diffuserConfig?.primeN || 13,
+                            designFreqHz:
+                              acoustics.diffuserConfig?.designFreqHz ||
+                              results.standingWaves.axialDepthHz ||
+                              1200,
+                            wellWidthMm: acoustics.diffuserConfig?.wellWidthMm || 22,
+                            finThicknessMm: acoustics.diffuserConfig?.finThicknessMm || 2.5,
+                            materialType: acoustics.diffuserConfig?.materialType || 'petg_cf',
+                          };
+                          setAcoustics((prev) => ({ ...prev, diffuserConfig: nextCfg }));
+                          setDimensions((prev) => ({ ...prev, diffuserConfig: nextCfg }));
+                        }}
+                        className={`px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider border transition cursor-pointer ${
+                          results.diffuserReport.enabled
+                            ? 'bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-400'
+                            : 'bg-slate-900 hover:bg-slate-800 text-indigo-300 border-indigo-700/70'
+                        }`}
+                      >
+                        {results.diffuserReport.enabled ? 'Disable Diffuser' : 'Enable QRD Array'}
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[10px]">
+                      <div>
+                        <label className="text-slate-400 block mb-1">Topology</label>
+                        <select
+                          value={results.diffuserReport.type}
+                          onChange={(e) => {
+                            const nextType = e.target.value as 'qrd_1d' | 'skyline_2d';
+                            const nextCfg = {
+                              enabled: results.diffuserReport?.enabled ?? true,
+                              type: nextType,
+                              targetWall: results.diffuserReport?.targetWall || 'rear',
+                              primeN: results.diffuserReport?.primeN || 13,
+                              designFreqHz: results.diffuserReport?.designFreqHz || 1200,
+                              wellWidthMm: results.diffuserReport?.wellWidthMm || 22,
+                              finThicknessMm: results.diffuserReport?.finThicknessMm || 2.5,
+                              materialType: acoustics.diffuserConfig?.materialType || 'petg_cf',
+                            };
+                            setAcoustics((prev) => ({ ...prev, diffuserConfig: nextCfg }));
+                            setDimensions((prev) => ({ ...prev, diffuserConfig: nextCfg }));
+                          }}
+                          className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200"
+                        >
+                          <option value="qrd_1d">1D Schroeder QRD</option>
+                          <option value="skyline_2d">2D Skyline Primitive</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-slate-400 block mb-1">Schroeder Prime (N)</label>
+                        <select
+                          value={results.diffuserReport.primeN}
+                          onChange={(e) => {
+                            const nextPrime = Number(e.target.value) as 7 | 11 | 13 | 17 | 19 | 23;
+                            const nextCfg = {
+                              enabled: results.diffuserReport?.enabled ?? true,
+                              type: results.diffuserReport?.type || 'qrd_1d',
+                              targetWall: results.diffuserReport?.targetWall || 'rear',
+                              primeN: nextPrime,
+                              designFreqHz: results.diffuserReport?.designFreqHz || 1200,
+                              wellWidthMm: results.diffuserReport?.wellWidthMm || 22,
+                              finThicknessMm: results.diffuserReport?.finThicknessMm || 2.5,
+                              materialType: acoustics.diffuserConfig?.materialType || 'petg_cf',
+                            };
+                            setAcoustics((prev) => ({ ...prev, diffuserConfig: nextCfg }));
+                            setDimensions((prev) => ({ ...prev, diffuserConfig: nextCfg }));
+                          }}
+                          className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200"
+                        >
+                          {[7, 11, 13, 17, 19, 23].map((p) => (
+                            <option key={p} value={p}>
+                              Prime N = {p}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-slate-400 block mb-1">Target Wall</label>
+                        <select
+                          value={results.diffuserReport.targetWall}
+                          onChange={(e) => {
+                            const nextWall = e.target.value as 'rear' | 'sides' | 'top_bottom' | 'all';
+                            const nextCfg = {
+                              enabled: results.diffuserReport?.enabled ?? true,
+                              type: results.diffuserReport?.type || 'qrd_1d',
+                              targetWall: nextWall,
+                              primeN: results.diffuserReport?.primeN || 13,
+                              designFreqHz: results.diffuserReport?.designFreqHz || 1200,
+                              wellWidthMm: results.diffuserReport?.wellWidthMm || 22,
+                              finThicknessMm: results.diffuserReport?.finThicknessMm || 2.5,
+                              materialType: acoustics.diffuserConfig?.materialType || 'petg_cf',
+                            };
+                            setAcoustics((prev) => ({ ...prev, diffuserConfig: nextCfg }));
+                            setDimensions((prev) => ({ ...prev, diffuserConfig: nextCfg }));
+                          }}
+                          className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200"
+                        >
+                          <option value="rear">Rear Wall Only</option>
+                          <option value="sides">Side Walls (2x)</option>
+                          <option value="top_bottom">Top &amp; Bottom (2x)</option>
+                          <option value="all">Full 5-Wall Array</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-1.5 text-[10px]">
+                      <div className="bg-slate-900/90 p-1.5 rounded border border-slate-800">
+                        <span className="text-slate-500 block">Bandwidth</span>
+                        <span className="text-indigo-300 font-bold">
+                          {results.diffuserReport.lowCutoffFreqHz}–{results.diffuserReport.highCutoffFreqHz} Hz
+                        </span>
+                      </div>
+                      <div className="bg-slate-900/90 p-1.5 rounded border border-slate-800">
+                        <span className="text-slate-500 block">Max Well d</span>
+                        <span className="text-cyan-300 font-bold">
+                          {results.diffuserReport.maxWellDepthMm} mm
+                        </span>
+                      </div>
+                      <div className="bg-slate-900/90 p-1.5 rounded border border-slate-800">
+                        <span className="text-slate-500 block">Scattering s</span>
+                        <span className="text-emerald-300 font-bold">
+                          {results.diffuserReport.scatteringCoefficientMid.toFixed(2)} (
+                          {results.diffuserReport.primaryAttenuationDb} dB)
+                        </span>
+                      </div>
+                      <div className="bg-slate-900/90 p-1.5 rounded border border-slate-800">
+                        <span className="text-slate-500 block">Displaced Vb</span>
+                        <span className="text-amber-300 font-bold">
+                          {results.diffuserReport.displacedVolumeLiters} L
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Visual Schroeder Well-Depth Sequence Preview */}
+                    <div className="bg-slate-900/80 border border-slate-800 rounded p-2 space-y-1">
+                      <div className="flex items-center justify-between text-[9px] text-slate-400">
+                        <span>Schroeder Sequence s_n = n² mod {results.diffuserReport.primeN}</span>
+                        <span>Clearance to Magnet: {results.diffuserReport.clearanceToDriverMagnetMm} mm</span>
+                      </div>
+                      <div className="flex items-end gap-1 h-10 pt-1">
+                        {results.diffuserReport.wellDepthsMm.map((dMm, idx) => {
+                          const pct = Math.max(
+                            12,
+                            Math.round((dMm / Math.max(1, results.diffuserReport!.maxWellDepthMm)) * 100)
+                          );
+                          return (
+                            <div
+                              key={idx}
+                              className="flex-1 bg-indigo-500/70 hover:bg-indigo-400 rounded-t transition-all"
+                              style={{ height: `${pct}%` }}
+                              title={`Well #${idx}: ${dMm} mm depth`}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -3953,6 +4221,45 @@ export const ControlDock: React.FC<ControlDockProps> = ({
                           }))
                         }
                         className="w-4 h-4 accent-amber-400 rounded cursor-pointer shrink-0"
+                      />
+                    </label>
+
+                    {/* Parametric Rear Thermal Ventilation Slots (Driver Pe Scaled) */}
+                    <label className="sm:col-span-2 flex items-center justify-between p-2.5 rounded-lg bg-slate-900/60 border border-orange-900/60 hover:border-orange-600/70 transition cursor-pointer">
+                      <div className="flex flex-col pr-2">
+                        <span className="text-slate-100 font-semibold flex items-center gap-1.5">
+                          <Flame className="w-3.5 h-3.5 text-orange-400 shrink-0" />
+                          <span>Parametric Rear Thermal Ventilation Slots (Driver Pe Scaled)</span>
+                          {results.thermalVentReport && (
+                            <span className="text-[9px] px-1.5 py-0.2 rounded bg-orange-950 text-orange-300 border border-orange-800 font-bold">
+                              {results.thermalVentReport.slotCount}× Slots • {results.thermalVentReport.driverContinuousPowerW}W RMS
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-sans mt-0.5">
+                          {results.thermalVentReport
+                            ? `${results.thermalVentReport.powerTierLabel} — CNC stadium louvers (${results.thermalVentReport.slotWidthMm}×${results.thermalVentReport.slotHeightMm}mm, ${results.thermalVentReport.totalNetFreeAreaCm2} cm² free area, -${results.thermalVentReport.voiceCoilTempDropC}°C voice-coil cooling)`
+                            : 'CNC rear-panel convective intake/exhaust slots scaled to driver RMS power rating'}
+                        </span>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(
+                          dimensions.thermalVentConfig?.enabled !== undefined
+                            ? dimensions.thermalVentConfig.enabled
+                            : activeHardware.showThermalVentSlots
+                        )}
+                        onChange={(e) =>
+                          setDimensions((prev) => ({
+                            ...prev,
+                            hardware: { ...activeHardware, showThermalVentSlots: e.target.checked },
+                            thermalVentConfig: {
+                              ...(prev.thermalVentConfig || {}),
+                              enabled: e.target.checked,
+                            },
+                          }))
+                        }
+                        className="w-4 h-4 accent-orange-400 rounded cursor-pointer shrink-0"
                       />
                     </label>
                   </div>

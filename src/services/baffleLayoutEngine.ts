@@ -79,11 +79,14 @@ export function recursivelyClampConduitZBounds(
   const rawIntD = Math.max(24, zFrontBaffleInnerMm - zRearWallInnerMm);
   const rawIntH = Math.max(40, externalHeightMm - 2 * wallThicknessMm);
 
-  // Minimum aerodynamic + structural margin from the opposing internal wall
+  // Minimum aerodynamic + rear damping liner margin from the opposing internal wall
+  // Ensures the port never plunges into the rear acoustic foam/labyrinth trap or chokes against the back wall
   const crossSectionHeightMm = isSlot ? Math.max(18, slotHeightMm) : Math.max(30, portDiameterMm);
+  const rearDampingReserveMm = Math.min(36, Math.max(18, Math.round(rawIntD * 0.13)));
+  const aerodynamicIntakeMarginMm = Math.max(42, Math.round(crossSectionHeightMm * 0.95));
   const wallClearanceMarginMm = Math.min(
-    Math.max(18, Math.round(crossSectionHeightMm * 0.55)),
-    Math.floor(rawIntD * 0.32)
+    rearDampingReserveMm + aerodynamicIntakeMarginMm,
+    Math.floor(rawIntD * 0.46)
   );
 
   // Account for elbow turn radius, conduit wall thickness, and internal flare lip protrusion along Z
@@ -92,17 +95,20 @@ export function recursivelyClampConduitZBounds(
   const elbowRadialAllowanceMm =
     recursionDepth > 0 ? Math.round(crossSectionHeightMm * 0.5 + conduitWallMm + flareProtrusionMm) : flareProtrusionMm;
 
-  // Available internal Z span for the primary axial leg
+  // Available internal Z span for the primary axial leg (capped to ≤ 54% of internal depth so ports never spear across the whole cabinet)
   const driverConstraintAllowanceMm =
     opposingDriverDepthMm > 0
-      ? Math.max(0, Math.min(rawIntD * 0.35, opposingDriverDepthMm - rawIntD * 0.45))
+      ? Math.max(0, Math.min(rawIntD * 0.35, opposingDriverDepthMm - rawIntD * 0.42))
       : 0;
 
   const maxSafeAxialLegMm = Math.max(
     24,
-    Math.floor(rawIntD - wallClearanceMarginMm - elbowRadialAllowanceMm - driverConstraintAllowanceMm)
+    Math.min(
+      Math.floor(rawIntD * 0.54),
+      Math.floor(rawIntD - wallClearanceMarginMm - elbowRadialAllowanceMm - driverConstraintAllowanceMm)
+    )
   );
-  const maxSafeVerticalLegMm = Math.max(28, Math.floor(rawIntH * 0.42 - conduitWallMm));
+  const maxSafeVerticalLegMm = Math.max(28, Math.floor(rawIntH * 0.38 - conduitWallMm));
 
   const safeTargetLengthMm = Math.max(24, isFinite(rawPortLengthMm) ? rawPortLengthMm : 60);
 
@@ -116,7 +122,7 @@ export function recursivelyClampConduitZBounds(
     if (safeTargetLengthMm > maxSafeAxialLegMm + maxSafeVerticalLegMm || recursionDepth >= 2) {
       // 180-degree U-Conduit fold: Leg 1 (axial) -> Leg 2 (vertical) -> Leg 3 (reverse axial return)
       foldBendCount = 2;
-      axialLeg1Mm = Math.min(Math.round(safeTargetLengthMm * 0.52), maxSafeAxialLegMm);
+      axialLeg1Mm = Math.min(Math.round(safeTargetLengthMm * 0.48), maxSafeAxialLegMm);
       verticalLeg2Mm = Math.min(
         Math.max(32, Math.round(safeTargetLengthMm - axialLeg1Mm)),
         maxSafeVerticalLegMm
@@ -129,7 +135,7 @@ export function recursivelyClampConduitZBounds(
     } else {
       // 90-degree L-Conduit fold: Leg 1 (axial) -> Leg 2 (vertical riser)
       foldBendCount = 1;
-      axialLeg1Mm = Math.min(Math.round(safeTargetLengthMm * 0.68), maxSafeAxialLegMm);
+      axialLeg1Mm = Math.min(Math.round(safeTargetLengthMm * 0.62), maxSafeAxialLegMm);
       verticalLeg2Mm = Math.min(
         Math.max(32, Math.round(safeTargetLengthMm - axialLeg1Mm)),
         maxSafeVerticalLegMm
@@ -137,8 +143,8 @@ export function recursivelyClampConduitZBounds(
       returnLeg3Mm = 0;
     }
   } else {
-    // Even if autoFold is disabled, hard-clamp physical Z length to internal cavity depth minus safety margin
-    axialLeg1Mm = Math.min(safeTargetLengthMm, Math.max(24, rawIntD - 12));
+    // Even if autoFold is disabled, hard-clamp physical Z length so it never hits rear damping or back wall
+    axialLeg1Mm = Math.min(safeTargetLengthMm, maxSafeAxialLegMm);
   }
 
   // Compute physical Z coordinates of the mount point and inner axial extremity
@@ -223,6 +229,146 @@ export function recursivelyClampConduitZBounds(
   };
 }
 
+export function getNominalWallThicknessMm(dimensions: EnclosureDimensions): number {
+  const mat = dimensions.material;
+  if (mat === 'carbon_fiber_12') return 12;
+  if (mat === 'baltic_birch_15' || mat === 'aluminum_6061' || mat === 'rigid_10k_sla') return 15;
+  if (mat === 'mdf_19' || mat === 'valchromat_hdf_19') return 19;
+  if (mat === 'solid_hardwood_20') return 20;
+  if (mat === 'mdf_25') return 25;
+  return 18;
+}
+
+/**
+ * Computes a collision-free Y-coordinate and Z-span (mm) for the internal horizontal
+ * window matrix brace so it never slices through front drivers, midrange chambers, ports, or rear electronics.
+ */
+export function computeCollisionFreeWindowBraceMm(
+  externalHeightMm: number,
+  externalDepthMm: number,
+  baffleThicknessMm: number,
+  wallThicknessMm: number,
+  frontDrivers: BaffleComponentPlacement[],
+  portComp?: BaffleComponentPlacement,
+  rearDampingDepthMm: number = 30
+): {
+  braceYCenterMm: number;
+  braceZCenterMm: number;
+  braceDepthMm: number;
+  braceZMinMm: number;
+  braceZMaxMm: number;
+} {
+  const halfH = externalHeightMm / 2;
+  const halfD = externalDepthMm / 2;
+  const topInnerY = halfH - wallThicknessMm - wallThicknessMm / 2 - 12;
+  const botInnerY = -halfH + wallThicknessMm + wallThicknessMm / 2 + 12;
+
+  // Build list of vertical keep-out zones inside the cabinet cavity
+  const keepOutBands: { yCenter: number; halfSpan: number; isFrontDriver: boolean; depthMm: number }[] = [];
+
+  for (const drv of frontDrivers) {
+    // Midrange chamber shell stays within outerRadiusMm; other drivers need cutoutRadiusMm inside the cavity
+    const internalR =
+      drv.role === 'midrange'
+        ? Math.min(drv.outerRadiusMm, drv.cutoutRadiusMm + 10)
+        : drv.cutoutRadiusMm;
+    keepOutBands.push({
+      yCenter: drv.centerY,
+      halfSpan: internalR + wallThicknessMm / 2 + 4,
+      isFrontDriver: true,
+      depthMm: drv.depthMm,
+    });
+  }
+
+  if (portComp) {
+    const portHalfH = portComp.isSlot
+      ? (portComp.slotHeightMm || 45) / 2 + wallThicknessMm + 6
+      : portComp.outerRadiusMm + 6;
+    keepOutBands.push({
+      yCenter: portComp.centerY,
+      halfSpan: portHalfH + wallThicknessMm / 2,
+      isFrontDriver: false,
+      depthMm: portComp.depthMm,
+    });
+  }
+
+  // Generate candidate Y positions: midpoints between sorted keep-out bands + uniform scan across [botInnerY, topInnerY]
+  const sortedByY = [...frontDrivers].sort((a, b) => b.centerY - a.centerY);
+  const candidates: number[] = [0];
+
+  for (let i = 0; i < sortedByY.length - 1; i++) {
+    const upper = sortedByY[i];
+    const lower = sortedByY[i + 1];
+    const upperR = upper.role === 'midrange' ? Math.min(upper.outerRadiusMm, upper.cutoutRadiusMm + 10) : upper.cutoutRadiusMm;
+    const lowerR = lower.role === 'midrange' ? Math.min(lower.outerRadiusMm, lower.cutoutRadiusMm + 10) : lower.cutoutRadiusMm;
+    const upperBotEdge = upper.centerY - upperR;
+    const lowerTopEdge = lower.centerY + lowerR;
+    candidates.push((upperBotEdge + lowerTopEdge) / 2);
+  }
+
+  const steps = 40;
+  for (let s = 0; s <= steps; s++) {
+    candidates.push(botInnerY + ((topInnerY - botInnerY) * s) / steps);
+  }
+
+  let bestY = 0;
+  let bestScore = -999999;
+
+  for (const rawCandY of candidates) {
+    const candY = Math.max(botInnerY, Math.min(topInnerY, rawCandY));
+    let minClearance = 9999;
+    for (const band of keepOutBands) {
+      const clearance = Math.abs(candY - band.yCenter) - band.halfSpan;
+      if (clearance < minClearance) {
+        minClearance = clearance;
+      }
+    }
+    // Slight preference for staying reasonably close to the vertical center when clearance is ample
+    const centerBias = -Math.abs(candY) * 0.02;
+    const score = minClearance + centerBias;
+    if (score > bestScore) {
+      bestScore = score;
+      bestY = candY;
+    }
+  }
+
+  const braceYCenterMm = Math.max(botInnerY, Math.min(topInnerY, Math.round(bestY * 10) / 10));
+
+  // Z-bounds: Rear edge stops cleanly in front of rear damping pad, rear crossover PCB, and terminal dish / plate amp
+  const zRearInnerMm = -halfD + wallThicknessMm;
+  const zFrontInnerMm = halfD - baffleThicknessMm;
+  const safeRearLimitMm = zRearInnerMm + Math.max(46, rearDampingDepthMm + 18);
+
+  // Front edge: if any driver or port overlaps the brace's Y band, recess the brace behind that component
+  let safeFrontLimitMm = zFrontInnerMm - 6;
+  for (const drv of frontDrivers) {
+    const internalR =
+      drv.role === 'midrange'
+        ? Math.min(drv.outerRadiusMm, drv.cutoutRadiusMm + 10)
+        : drv.cutoutRadiusMm;
+    const yDist = Math.abs(braceYCenterMm - drv.centerY);
+    if (yDist < internalR + wallThicknessMm * 0.65) {
+      const drvRearZ = halfD - drv.depthMm - 12;
+      safeFrontLimitMm = Math.min(safeFrontLimitMm, drvRearZ);
+    }
+  }
+
+  // Ensure valid positive brace depth even in shallow cabinets
+  const minBraceDepthMm = 32;
+  const braceZMinMm = Math.min(safeRearLimitMm, zFrontInnerMm - minBraceDepthMm - 6);
+  const braceZMaxMm = Math.max(braceZMinMm + minBraceDepthMm, safeFrontLimitMm);
+  const braceDepthMm = Math.max(minBraceDepthMm, braceZMaxMm - braceZMinMm);
+  const braceZCenterMm = (braceZMinMm + braceZMaxMm) / 2;
+
+  return {
+    braceYCenterMm: Math.round(braceYCenterMm * 10) / 10,
+    braceZCenterMm: Math.round(braceZCenterMm * 10) / 10,
+    braceDepthMm: Math.round(braceDepthMm * 10) / 10,
+    braceZMinMm: Math.round(braceZMinMm * 10) / 10,
+    braceZMaxMm: Math.round(braceZMaxMm * 10) / 10,
+  };
+}
+
 /**
  * Fast closed-form Helmholtz resonator port length estimator (mm)
  * Used when calculating hypothetical layout configurations prior to full matrix synthesis.
@@ -232,8 +378,8 @@ export function estimatePortLengthMm(
   acoustics: AcousticParameters
 ): number {
   if (acoustics.alignment === 'sealed') return 0;
-  const wallT = 18;
-  const baffleT = dimensions.baffleThicknessMm || 18;
+  const wallT = getNominalWallThicknessMm(dimensions);
+  const baffleT = dimensions.baffleThicknessMm || wallT;
   const intW = Math.max(50, dimensions.externalWidthMm - 2 * wallT);
   const intH = Math.max(50, dimensions.externalHeightMm - 2 * wallT);
   const intD = Math.max(50, dimensions.externalDepthMm - baffleT - wallT);
@@ -271,8 +417,8 @@ export function computeBaffleLayout(
 ): BaffleLayoutResult {
   const { externalWidthMm: W, externalHeightMm: H, externalDepthMm: D, baffleThicknessMm } = dimensions;
   // Panel thicknesses
-  const baffleT = baffleThicknessMm || 18;
-  const wallT = 18; // standard nominal cabinet wall thickness
+  const wallT = getNominalWallThicknessMm(dimensions);
+  const baffleT = baffleThicknessMm || wallT;
   const intW = Math.max(50, W - 2 * wallT);
   const intH = Math.max(50, H - 2 * wallT);
   const intD = Math.max(50, D - baffleT - wallT);
@@ -928,11 +1074,20 @@ export function computeBaffleLayout(
         }
       });
 
-      // 2. Interference with Window Matrix Brace
-      const braceYCenterMm = -H * 0.05;
+      // 2. Interference with Window Matrix Brace (using collision-free brace placement)
+      const braceSpec = computeCollisionFreeWindowBraceMm(
+        H,
+        D,
+        baffleT,
+        wallT,
+        frontDrivers,
+        portComp,
+        30
+      );
+      const braceYCenterMm = braceSpec.braceYCenterMm;
       const braceTopYMm = braceYCenterMm + wallT / 2;
       const braceBottomYMm = braceYCenterMm - wallT / 2;
-      const braceZCenterMm = clampZToInternalCavityMm(-(baffleT + wallT) / 2, D, baffleT, wallT, 8);
+      const braceZCenterMm = braceSpec.braceZCenterMm;
 
       let braceDistanceMm = 999;
       if (portComp.centerY > braceTopYMm) {
@@ -1075,8 +1230,8 @@ export function autoResolveBaffleClashes(
   results?: Partial<AcousticCalculationResult>,
   recursionPass: number = 0
 ): AutoResolveResult {
-  const wallT = 18;
-  const baffleT = dimensions.baffleThicknessMm || 18;
+  const wallT = getNominalWallThicknessMm(dimensions);
+  const baffleT = dimensions.baffleThicknessMm || wallT;
   const woofer = acoustics.driverAssignments.woofer.driver;
   const tweeter = acoustics.driverAssignments.tweeter.driver;
   const midrange = acoustics.driverAssignments.midrange.driver;

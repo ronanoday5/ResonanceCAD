@@ -2,13 +2,15 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { Wind, AlertTriangle, CheckCircle, Eye, EyeOff, ShieldCheck, Zap, Download, Activity, X, Sparkles } from 'lucide-react';
+import { Wind, AlertTriangle, CheckCircle, Eye, EyeOff, ShieldCheck, Zap, Download, Activity, X, Sparkles, Layers, Radio, Flame } from 'lucide-react';
 import {
   CATEGORY_SPECS,
   type AcousticCalculationResult,
   type AcousticParameters,
   type CameraPreset,
+  type CaliberDeltaEvent,
   type CategoryHardwareConfig,
+  type CoOptimizationConfig,
   type CutListItem,
   type DriverPreset,
   type EnclosureDimensions,
@@ -16,7 +18,7 @@ import {
   type SpeakerCategory,
 } from '../types/loudspeaker.ts';
 import { MATERIAL_SPECS, SURFACE_FINISH_SPECS } from '../services/acousticEngine.ts';
-import { computeBaffleLayout } from '../services/baffleLayoutEngine.ts';
+import { computeBaffleLayout, computeCollisionFreeWindowBraceMm } from '../services/baffleLayoutEngine.ts';
 import { buildParametricPortManifoldGroup } from '../services/parametricPortEngine.ts';
 import { buildAdditiveAcousticGroup } from '../services/additiveAcousticEngine.ts';
 import {
@@ -60,6 +62,9 @@ interface AcousticCADViewerProps {
   hasPendingOptimizations?: boolean;
   pendingOptimizationReasons?: string[];
   onAutoOptimize?: () => void;
+  coOptConfig?: CoOptimizationConfig;
+  onToggleCoOpt?: () => void;
+  lastCaliberDelta?: CaliberDeltaEvent | null;
 }
 
 interface ComponentMeshDef {
@@ -101,6 +106,9 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
   hasPendingOptimizations = false,
   pendingOptimizationReasons = [],
   onAutoOptimize,
+  coOptConfig,
+  onToggleCoOpt,
+  lastCaliberDelta,
 }) => {
   const { formatLength, formatVolume, formatWeight, formatVelocity } = useUnits();
   const mountRef = useRef<HTMLDivElement>(null);
@@ -149,6 +157,33 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
   const leaderLineSvgRef = useRef<SVGSVGElement | null>(null);
   const leaderPathRef = useRef<SVGPathElement | null>(null);
 
+  // Internal Panel Holes: Airflow Relief & Cable Routing Visualization State & Refs
+  const [showInternalChannels, setShowInternalChannels] = useState<boolean>(true);
+  const [activeChannelCallout, setActiveChannelCallout] = useState<'all' | 'airflow' | 'cable'>('all');
+  const showInternalChannelsRef = useRef<boolean>(showInternalChannels);
+  const activeChannelCalloutRef = useRef<'all' | 'airflow' | 'cable'>(activeChannelCallout);
+
+  useEffect(() => {
+    showInternalChannelsRef.current = showInternalChannels;
+  }, [showInternalChannels]);
+
+  useEffect(() => {
+    activeChannelCalloutRef.current = activeChannelCallout;
+  }, [activeChannelCallout]);
+
+  const airflowAnchorObjRef = useRef<THREE.Object3D | null>(null);
+  const cableAnchorObjRef = useRef<THREE.Object3D | null>(null);
+
+  const airflowBadgeRef = useRef<HTMLDivElement | null>(null);
+  const airflowReticleRef = useRef<HTMLDivElement | null>(null);
+  const airflowLeaderSvgRef = useRef<SVGSVGElement | null>(null);
+  const airflowLeaderPathRef = useRef<SVGPathElement | null>(null);
+
+  const cableBadgeRef = useRef<HTMLDivElement | null>(null);
+  const cableReticleRef = useRef<HTMLDivElement | null>(null);
+  const cableLeaderSvgRef = useRef<SVGSVGElement | null>(null);
+  const cableLeaderPathRef = useRef<SVGPathElement | null>(null);
+
   const selectedPartIdRef = useRef<string | null>(selectedPartId);
   const hoveredPartIdRef = useRef<string | null>(hoveredPartId);
 
@@ -164,6 +199,10 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
   const box3HelperRef = useRef<THREE.Box3>(new THREE.Box3());
   const anchorVecRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const projVecRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const tempVecAirRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const projVecAirRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const tempVecCableRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const projVecCableRef = useRef<THREE.Vector3>(new THREE.Vector3());
 
   useEffect(() => {
     if (onModelRootReady) {
@@ -461,6 +500,133 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
         if (lineEl) lineEl.style.display = 'none';
       }
 
+      // Project Internal Panel Hole Callouts (Airflow Relief & Cable Routing)
+      const airBadgeEl = airflowBadgeRef.current;
+      const airReticleEl = airflowReticleRef.current;
+      const airLineEl = airflowLeaderSvgRef.current;
+      const airPathEl = airflowLeaderPathRef.current;
+
+      const cableBadgeEl = cableBadgeRef.current;
+      const cableReticleEl = cableReticleRef.current;
+      const cableLineEl = cableLeaderSvgRef.current;
+      const cablePathEl = cableLeaderPathRef.current;
+
+      if (showInternalChannelsRef.current && container) {
+        const w = container.clientWidth;
+        const h = container.clientHeight;
+
+        // 1. Airflow Relief Aperture Projection
+        if (
+          airflowAnchorObjRef.current &&
+          (activeChannelCalloutRef.current === 'all' || activeChannelCalloutRef.current === 'airflow')
+        ) {
+          airflowAnchorObjRef.current.getWorldPosition(tempVecAirRef.current);
+          projVecAirRef.current.copy(tempVecAirRef.current).project(camera);
+
+          if (projVecAirRef.current.z < 1.0) {
+            const screenX = (projVecAirRef.current.x * 0.5 + 0.5) * w;
+            const screenY = (-projVecAirRef.current.y * 0.5 + 0.5) * h;
+
+            const cardW = 285;
+            const cardH = 155;
+            let cardX = screenX + 38;
+            let cardY = screenY - 75;
+
+            if (cardX + cardW > w - 16) {
+              cardX = screenX - cardW - 38;
+            }
+            cardX = Math.max(16, Math.min(w - cardW - 16, cardX));
+            cardY = Math.max(70, Math.min(h - cardH - 80, cardY));
+
+            const attachX = cardX < screenX ? cardX + cardW : cardX;
+            const attachY = cardY + 26;
+
+            if (airReticleEl) {
+              airReticleEl.style.transform = `translate3d(${screenX}px, ${screenY}px, 0)`;
+              airReticleEl.style.display = 'flex';
+            }
+            if (airBadgeEl) {
+              airBadgeEl.style.transform = `translate3d(${cardX}px, ${cardY}px, 0)`;
+              airBadgeEl.style.display = 'block';
+            }
+            if (airLineEl && airPathEl) {
+              airLineEl.style.display = 'block';
+              airPathEl.setAttribute(
+                'd',
+                `M ${screenX} ${screenY} L ${screenX + (cardX < screenX ? -15 : 15)} ${attachY} L ${attachX} ${attachY}`
+              );
+            }
+          } else {
+            if (airBadgeEl) airBadgeEl.style.display = 'none';
+            if (airReticleEl) airReticleEl.style.display = 'none';
+            if (airLineEl) airLineEl.style.display = 'none';
+          }
+        } else {
+          if (airBadgeEl) airBadgeEl.style.display = 'none';
+          if (airReticleEl) airReticleEl.style.display = 'none';
+          if (airLineEl) airLineEl.style.display = 'none';
+        }
+
+        // 2. Cable Routing Channel Projection
+        if (
+          cableAnchorObjRef.current &&
+          (activeChannelCalloutRef.current === 'all' || activeChannelCalloutRef.current === 'cable')
+        ) {
+          cableAnchorObjRef.current.getWorldPosition(tempVecCableRef.current);
+          projVecCableRef.current.copy(tempVecCableRef.current).project(camera);
+
+          if (projVecCableRef.current.z < 1.0) {
+            const screenX = (projVecCableRef.current.x * 0.5 + 0.5) * w;
+            const screenY = (-projVecCableRef.current.y * 0.5 + 0.5) * h;
+
+            const cardW = 285;
+            const cardH = 155;
+            let cardX = screenX - cardW - 38;
+            let cardY = screenY + 20;
+
+            if (cardX < 16) {
+              cardX = screenX + 38;
+            }
+            cardX = Math.max(16, Math.min(w - cardW - 16, cardX));
+            cardY = Math.max(70, Math.min(h - cardH - 80, cardY));
+
+            const attachX = cardX < screenX ? cardX + cardW : cardX;
+            const attachY = cardY + 26;
+
+            if (cableReticleEl) {
+              cableReticleEl.style.transform = `translate3d(${screenX}px, ${screenY}px, 0)`;
+              cableReticleEl.style.display = 'flex';
+            }
+            if (cableBadgeEl) {
+              cableBadgeEl.style.transform = `translate3d(${cardX}px, ${cardY}px, 0)`;
+              cableBadgeEl.style.display = 'block';
+            }
+            if (cableLineEl && cablePathEl) {
+              cableLineEl.style.display = 'block';
+              cablePathEl.setAttribute(
+                'd',
+                `M ${screenX} ${screenY} L ${screenX + (cardX < screenX ? -15 : 15)} ${attachY} L ${attachX} ${attachY}`
+              );
+            }
+          } else {
+            if (cableBadgeEl) cableBadgeEl.style.display = 'none';
+            if (cableReticleEl) cableReticleEl.style.display = 'none';
+            if (cableLineEl) cableLineEl.style.display = 'none';
+          }
+        } else {
+          if (cableBadgeEl) cableBadgeEl.style.display = 'none';
+          if (cableReticleEl) cableReticleEl.style.display = 'none';
+          if (cableLineEl) cableLineEl.style.display = 'none';
+        }
+      } else {
+        if (airBadgeEl) airBadgeEl.style.display = 'none';
+        if (airReticleEl) airReticleEl.style.display = 'none';
+        if (airLineEl) airLineEl.style.display = 'none';
+        if (cableBadgeEl) cableBadgeEl.style.display = 'none';
+        if (cableReticleEl) cableReticleEl.style.display = 'none';
+        if (cableLineEl) cableLineEl.style.display = 'none';
+      }
+
       renderer.render(scene, camera);
     };
 
@@ -671,17 +837,51 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
       baffleShape.holes.push(path);
     });
 
+    // Resolve active port profile early so front/rear baffle cutouts match circular, elliptical, or slot geometry
+    let activePortProfile =
+      results.parametricPort?.profileType ||
+      acoustics.parametricPortConfig?.profileType ||
+      (acoustics.portType === 'slot' ? 'rectilinear_slot' : 'circular_bellmouth');
+    const isProfileSlotFamily =
+      activePortProfile === 'rectilinear_slot' ||
+      activePortProfile === 'folded_l_conduit' ||
+      activePortProfile === 'folded_u_conduit';
+    if (acoustics.portType === 'round' && isProfileSlotFamily) {
+      activePortProfile = 'circular_bellmouth';
+    } else if (acoustics.portType === 'slot' && !isProfileSlotFamily) {
+      activePortProfile = 'rectilinear_slot';
+    }
+    const isSlotFamily =
+      activePortProfile === 'rectilinear_slot' ||
+      activePortProfile === 'folded_l_conduit' ||
+      activePortProfile === 'folded_u_conduit';
+
     // Front port hole (if ported alignment and port is on front)
     if (acoustics.alignment === 'ported' && portComp && portComp.panel === 'front') {
-      if (acoustics.portType === 'round') {
+      if (!isSlotFamily && acoustics.portType === 'round') {
         const portPath = new THREE.Path();
-        portPath.absarc(portComp.centerX * scale, portComp.centerY * scale, portComp.cutoutRadiusMm * scale, 0, Math.PI * 2, true);
+        const cutR = portComp.cutoutRadiusMm * scale;
+        if (activePortProfile === 'elliptical_aperture') {
+          const aspect = Math.sqrt(acoustics.parametricPortConfig?.ellipseAspectRatio || 1.65);
+          portPath.absellipse(
+            portComp.centerX * scale,
+            portComp.centerY * scale,
+            cutR * aspect,
+            cutR / aspect,
+            0,
+            Math.PI * 2,
+            true,
+            0
+          );
+        } else {
+          portPath.absarc(portComp.centerX * scale, portComp.centerY * scale, cutR, 0, Math.PI * 2, true);
+        }
         baffleShape.holes.push(portPath);
       } else {
-        const slotWidthM = Math.min(W - 2 * t - 0.005, (portComp.slotWidthMm || 280) * scale);
-        const slotHeightM = (portComp.slotHeightMm || 40) * scale;
+        const slotWidthM = Math.min(W - 2 * t - 0.004, (portComp.slotWidthMm || 280) * scale);
+        const slotHeightM = (portComp.slotHeightMm || acoustics.slotHeightMm || 45) * scale;
         const slotPath = new THREE.Path();
-        const slotBottomY = (portComp.centerY - (portComp.slotHeightMm || 40) / 2) * scale;
+        const slotBottomY = (portComp.centerY - (portComp.slotHeightMm || acoustics.slotHeightMm || 45) / 2) * scale;
         const hw = slotWidthM / 2;
         slotPath.moveTo(-hw, slotBottomY);
         slotPath.lineTo(hw, slotBottomY);
@@ -752,89 +952,421 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
       });
     }
 
+    // 1. FRONT BAFFLE (True CNC dimensions W x H x baffleT with zero bevel inflation)
     const baffleGeo = new THREE.ExtrudeGeometry(baffleShape, {
       depth: baffleT,
-      bevelEnabled: true,
-      bevelSegments: 2,
+      bevelEnabled: false,
       steps: 1,
-      bevelSize: 0.001,
-      bevelThickness: 0.001,
     });
-    baffleGeo.center();
+    baffleGeo.translate(0, 0, -baffleT / 2);
 
     const baffleMesh = new THREE.Mesh(baffleGeo, currentBaffleMat);
     const baffleBasePos = new THREE.Vector3(0, 0, D / 2 - baffleT / 2);
     registerComponent('baffle_front', baffleMesh, baffleBasePos, new THREE.Vector3(0, 0, 1), explDistBase * 1.2, true);
 
-    // 2. REAR PANEL (with cutout if rear port is active)
+    // Pre-calculate Internal Bracing, Hardware Flags, and Rear Wall Non-Overlapping Layout BEFORE building Rear/Side/Bottom Panels
     const rearW = W - 2 * t;
     const rearH = H - 2 * t;
-    let rearGeo: THREE.BufferGeometry;
+    const topBottomD = D - baffleT;
+    const sideH = H - 2 * t;
+    const sideD = D - baffleT;
+    const usableCavityDepthM = Math.max(0.04, D - baffleT - t);
+    const foamThicknessM = Math.min(0.024, Math.max(0.012, usableCavityDepthM * 0.10));
+    const rearDampingReserveMm = Math.round(
+      (results.additiveAcousticReport?.enabled ? 0.038 : foamThicknessM) * 1000
+    );
 
-    if (acoustics.alignment === 'ported' && portComp && portComp.panel === 'rear') {
-      const rearShape = new THREE.Shape();
-      rearShape.moveTo(-rearW / 2, -rearH / 2);
-      rearShape.lineTo(rearW / 2, -rearH / 2);
-      rearShape.lineTo(rearW / 2, rearH / 2);
-      rearShape.lineTo(-rearW / 2, rearH / 2);
-      rearShape.closePath();
+    const braceSpec = computeCollisionFreeWindowBraceMm(
+      dimensions.externalHeightMm,
+      dimensions.externalDepthMm,
+      dimensions.baffleThicknessMm || materialSpec?.nominalThicknessMm || 18,
+      materialSpec?.nominalThicknessMm || 18,
+      frontDrivers,
+      portComp,
+      rearDampingReserveMm
+    );
 
-      const rearPortHole = new THREE.Path();
-      if (acoustics.portType === 'slot' || portComp.isSlot) {
-        const sw = Math.min(rearW - 0.01, (portComp.slotWidthMm || dimensions.externalWidthMm - 36) * scale);
-        const sh = Math.min(rearH * 0.4, (portComp.slotHeightMm || 45) * scale);
-        const px = portComp.centerX * scale;
-        const py = Math.max(-rearH / 2 + sh / 2 + 0.005, Math.min(rearH / 2 - sh / 2 - 0.005, portComp.centerY * scale));
-        rearPortHole.moveTo(px - sw / 2, py - sh / 2);
-        rearPortHole.lineTo(px + sw / 2, py - sh / 2);
-        rearPortHole.lineTo(px + sw / 2, py + sh / 2);
-        rearPortHole.lineTo(px - sw / 2, py + sh / 2);
-        rearPortHole.closePath();
-      } else {
-        const safeCutoutR = Math.min(
-          portComp.cutoutRadiusMm * scale,
-          Math.max(0.015, Math.min(rearW, rearH) / 2 - 0.012)
-        );
-        const safePy = Math.max(
-          -rearH / 2 + safeCutoutR + 0.008,
-          Math.min(rearH / 2 - safeCutoutR - 0.008, portComp.centerY * scale)
-        );
-        rearPortHole.absarc(portComp.centerX * scale, safePy, safeCutoutR, 0, Math.PI * 2, true);
-      }
-      rearShape.holes.push(rearPortHole);
+    const sideLatticeInsetM = results.additiveAcousticReport?.enabled ? 0.026 : 0.002;
+    const braceW = Math.max(0.06, W - 2 * t - sideLatticeInsetM);
+    const braceD = Math.max(0.032, braceSpec.braceDepthMm * scale);
+    const braceY = braceSpec.braceYCenterMm * scale;
+    const braceZ = braceSpec.braceZCenterMm * scale;
 
-      rearGeo = new THREE.ExtrudeGeometry(rearShape, { depth: t, bevelEnabled: false });
-      rearGeo.center();
-    } else {
-      rearGeo = new THREE.BoxGeometry(rearW, rearH, t);
+    const categoryKey: SpeakerCategory = dimensions.category || 'studio_monitor';
+    const catSpec = CATEGORY_SPECS[categoryKey] || CATEGORY_SPECS.studio_monitor;
+    const hwConfig: CategoryHardwareConfig = {
+      showHandles: dimensions.hardware?.showHandles ?? catSpec.defaultHardware.showHandles,
+      showPoleMount: dimensions.hardware?.showPoleMount ?? catSpec.defaultHardware.showPoleMount,
+      showCornerProtectors: dimensions.hardware?.showCornerProtectors ?? catSpec.defaultHardware.showCornerProtectors,
+      showIsolationFeet: dimensions.hardware?.showIsolationFeet ?? catSpec.defaultHardware.showIsolationFeet,
+    };
+
+    const hasPlateAmp = !!results.subcategoryTelemetry?.hasPlateAmplifier || dimensions.subcategory === 'active_powered_biamp';
+    const isRearPortActive = Boolean(acoustics.alignment === 'ported' && portComp && portComp.panel === 'rear');
+
+    // --- UNIFIED REAR WALL NON-OVERLAPPING 2D LAYOUT SOLVER ---
+    interface RearRectZone {
+      x: number;
+      y: number;
+      w: number;
+      h: number;
     }
+    const rearOccupiedZones: RearRectZone[] = [];
+
+    // Reserve rear port keep-out zone if rear port is active
+    let rearPortCenterXM = 0;
+    let rearPortCenterYM = 0;
+    let rearPortCutoutRM = 0.035;
+    let rearSlotWM = 0.2;
+    let rearSlotHM = 0.045;
+
+    if (isRearPortActive && portComp) {
+      rearPortCenterXM = portComp.centerX * scale;
+      if (isSlotFamily || acoustics.portType === 'slot' || portComp.isSlot) {
+        rearSlotWM = Math.min(rearW - 0.008, (portComp.slotWidthMm || dimensions.externalWidthMm - 36) * scale);
+        rearSlotHM = Math.min(rearH * 0.35, (portComp.slotHeightMm || acoustics.slotHeightMm || 45) * scale);
+        rearPortCenterYM = Math.max(
+          -rearH / 2 + rearSlotHM / 2 + 0.004,
+          Math.min(rearH / 2 - rearSlotHM / 2 - 0.004, portComp.centerY * scale)
+        );
+        // Reserve both the slot aperture and the internal shelf board thickness above/below it
+        rearOccupiedZones.push({
+          x: rearPortCenterXM,
+          y: rearPortCenterYM + t / 2,
+          w: rearSlotWM + 0.016,
+          h: rearSlotHM + t + 0.024,
+        });
+      } else {
+        rearPortCutoutRM = Math.min(
+          portComp.cutoutRadiusMm * scale,
+          Math.max(0.015, Math.min(rearW, rearH) / 2 - 0.014)
+        );
+        const portOuterRM = Math.min(
+          portComp.outerRadiusMm * scale,
+          Math.max(rearPortCutoutRM + 0.008, Math.min(rearW, rearH) / 2 - 0.008)
+        );
+        rearPortCenterYM = Math.max(
+          -rearH / 2 + portOuterRM + 0.008,
+          Math.min(rearH / 2 - portOuterRM - 0.008, portComp.centerY * scale)
+        );
+        rearOccupiedZones.push({
+          x: rearPortCenterXM,
+          y: rearPortCenterYM,
+          w: portOuterRM * 2 + 0.02,
+          h: portOuterRM * 2 + 0.02,
+        });
+      }
+    }
+
+    // Helper to place a rectangular component on the rear wall with guaranteed zero overlap
+    const findDisjointRearSlot = (
+      itemW: number,
+      itemH: number,
+      prefX: number,
+      prefY: number,
+      avoidBraceY: boolean
+    ): { x: number; y: number } => {
+      const margin = 0.01;
+      const minX = -rearW / 2 + itemW / 2 + margin;
+      const maxX = rearW / 2 - itemW / 2 - margin;
+      const minY = -rearH / 2 + itemH / 2 + margin;
+      const maxY = rearH / 2 - itemH / 2 - margin;
+
+      const clampX = (vx: number) => (minX <= maxX ? Math.max(minX, Math.min(maxX, vx)) : 0);
+      const clampY = (vy: number) => (minY <= maxY ? Math.max(minY, Math.min(maxY, vy)) : 0);
+
+      const candidates: { x: number; y: number }[] = [
+        { x: clampX(prefX), y: clampY(prefY) },
+      ];
+      const gxSteps = 8;
+      const gySteps = 14;
+      for (let iy = 0; iy <= gySteps; iy++) {
+        const cy = minY <= maxY ? minY + ((maxY - minY) * iy) / gySteps : 0;
+        for (let ix = 0; ix <= gxSteps; ix++) {
+          const cx = minX <= maxX ? minX + ((maxX - minX) * ix) / gxSteps : 0;
+          candidates.push({ x: cx, y: cy });
+        }
+      }
+
+      let bestPos = { x: clampX(prefX), y: clampY(prefY) };
+      let bestScore = -999999;
+
+      for (const cand of candidates) {
+        let minSep = 999;
+        for (const z of rearOccupiedZones) {
+          const sepX = Math.abs(cand.x - z.x) - (itemW / 2 + z.w / 2);
+          const sepY = Math.abs(cand.y - z.y) - (itemH / 2 + z.h / 2);
+          const sep = Math.max(sepX, sepY);
+          if (sep < minSep) minSep = sep;
+        }
+        if (avoidBraceY) {
+          const braceSep = Math.abs(cand.y - braceY) - (itemH / 2 + t / 2 + 0.008);
+          if (braceSep < minSep) minSep = braceSep;
+        }
+        const distPref = Math.hypot(cand.x - prefX, cand.y - prefY);
+        const score = minSep * 10 - distPref * 0.25;
+        if (score > bestScore) {
+          bestScore = score;
+          bestPos = cand;
+        }
+      }
+
+      rearOccupiedZones.push({
+        x: bestPos.x,
+        y: bestPos.y,
+        w: itemW + 0.012,
+        h: itemH + 0.012,
+      });
+      return bestPos;
+    };
+
+    // Size & place Terminal Dish (`speakon_terminal_dish`)
+    const spk = results.speakonReport;
+    const dishW = spk
+      ? Math.min(rearW * (hasPlateAmp ? 0.38 : 0.56), spk.dishWidthMm * scale)
+      : Math.min(rearW * 0.45, 0.1);
+    const dishH = spk
+      ? Math.min(rearH * 0.22, spk.dishHeightMm * scale)
+      : Math.min(rearH * 0.2, 0.08);
+    const dishPocketD = spk
+      ? Math.min(0.022, spk.dishPocketDepthMm * scale)
+      : 0.018;
+    const dishCutW = dishW * 0.86;
+    const dishCutH = dishH * 0.82;
+    const prefDishX = hasPlateAmp ? rearW * 0.22 : 0;
+    const prefDishY = spk ? spk.dishCenterYMm * scale : -rearH * 0.24;
+    const dishSlot = findDisjointRearSlot(dishW, dishH, prefDishX, prefDishY, true);
+    const dishPosX = dishSlot.x;
+    const dishPosY = dishSlot.y;
+
+    // Size & place Commercial Plate Amplifier (`hardware_plate_amp`) if active
+    const ampPlateW = Math.min(0.16, rearW * 0.42);
+    const ampPlateH = Math.min(0.22, rearH * 0.28);
+    const ampPlateDepth = Math.min(0.034, usableCavityDepthM * 0.18);
+    const ampCutW = ampPlateW * 0.88;
+    const ampCutH = ampPlateH * 0.88;
+    let ampPosX = -rearW * 0.22;
+    let ampPosY = -rearH * 0.16;
+    if (hasPlateAmp) {
+      const ampSlot = findDisjointRearSlot(ampPlateW, ampPlateH, -rearW * 0.22, -rearH * 0.16, true);
+      ampPosX = ampSlot.x;
+      ampPosY = ampSlot.y;
+    }
+
+    // Size & place Internal Crossover PCB (`crossover_pcb`)
+    const pcbW = Math.min(0.135, rearW * 0.44);
+    const pcbH = Math.min(0.092, rearH * 0.18);
+    const pcbSlot = findDisjointRearSlot(pcbW, pcbH, 0, dishPosY + dishH / 2 + pcbH / 2 + 0.024, true);
+    const crossoverPosX = pcbSlot.x;
+    const crossoverBaseY = pcbSlot.y;
+
+    // Size & place Parametric Rear Thermal Ventilation Slot Banks (scaled by Driver Pe rating)
+    const tvReport = results.thermalVentReport;
+    const hasThermalVents = Boolean(tvReport?.enabled);
+    const tvSlotWM = tvReport ? Math.min(rearW * 0.38, tvReport.slotWidthMm * scale) : 0.06;
+    const tvSlotHM = tvReport ? Math.max(0.004, tvReport.slotHeightMm * scale) : 0.007;
+    const tvPitchM = tvReport ? Math.max(tvSlotHM + 0.004, tvReport.slotPitchMm * scale) : 0.0125;
+    const tvIntakeCount = tvReport ? tvReport.intakeSlotCount : 3;
+    const tvExhaustCount = tvReport ? tvReport.exhaustSlotCount : 3;
+    const tvBankWM = tvSlotWM + 0.014;
+    const tvIntakeBankHM = tvIntakeCount * tvPitchM + 0.01;
+    const tvExhaustBankHM = tvExhaustCount * tvPitchM + 0.01;
+
+    let tvIntakeBankPos = { x: -rearW * 0.24, y: -rearH * 0.30 };
+    let tvExhaustBankPos = { x: rearW * 0.24, y: rearH * 0.30 };
+    if (hasThermalVents) {
+      tvIntakeBankPos = findDisjointRearSlot(tvBankWM, tvIntakeBankHM, -rearW * 0.24, -rearH * 0.30, true);
+      tvExhaustBankPos = findDisjointRearSlot(tvBankWM, tvExhaustBankHM, rearW * 0.24, rearH * 0.30, true);
+    }
+
+    // 2. REAR PANEL (with CNC cutouts for Rear Port, Terminal Dish pocket, Plate Amplifier chassis, and Parametric Thermal Ventilation Slots)
+    const rearShape = new THREE.Shape();
+    rearShape.moveTo(-rearW / 2, -rearH / 2);
+    rearShape.lineTo(rearW / 2, -rearH / 2);
+    rearShape.lineTo(rearW / 2, rearH / 2);
+    rearShape.lineTo(-rearW / 2, rearH / 2);
+    rearShape.closePath();
+
+    const addRearPanelRectHole = (cx: number, cy: number, cw: number, ch: number) => {
+      const x0 = Math.max(-rearW / 2 + 0.005, cx - cw / 2);
+      const x1 = Math.min(rearW / 2 - 0.005, cx + cw / 2);
+      const y0 = Math.max(-rearH / 2 + 0.005, cy - ch / 2);
+      const y1 = Math.min(rearH / 2 - 0.005, cy + ch / 2);
+      if (x1 - x0 > 0.003 && y1 - y0 > 0.003) {
+        const hole = new THREE.Path();
+        hole.moveTo(x0, y0);
+        hole.lineTo(x1, y0);
+        hole.lineTo(x1, y1);
+        hole.lineTo(x0, y1);
+        hole.closePath();
+        rearShape.holes.push(hole);
+      }
+    };
+
+    if (isRearPortActive && portComp) {
+      if (isSlotFamily || acoustics.portType === 'slot' || portComp.isSlot) {
+        addRearPanelRectHole(rearPortCenterXM, rearPortCenterYM, rearSlotWM, rearSlotHM);
+      } else {
+        const rearPortHole = new THREE.Path();
+        if (activePortProfile === 'elliptical_aperture') {
+          const aspect = Math.sqrt(acoustics.parametricPortConfig?.ellipseAspectRatio || 1.65);
+          rearPortHole.absellipse(
+            rearPortCenterXM,
+            rearPortCenterYM,
+            rearPortCutoutRM * aspect,
+            rearPortCutoutRM / aspect,
+            0,
+            Math.PI * 2,
+            true,
+            0
+          );
+        } else {
+          rearPortHole.absarc(rearPortCenterXM, rearPortCenterYM, rearPortCutoutRM, 0, Math.PI * 2, true);
+        }
+        rearShape.holes.push(rearPortHole);
+      }
+    }
+
+    if (spk) {
+      addRearPanelRectHole(dishPosX, dishPosY, dishCutW, dishCutH);
+    }
+    if (hasPlateAmp) {
+      addRearPanelRectHole(ampPosX, ampPosY, ampCutW, ampCutH);
+    }
+    if (hasThermalVents) {
+      for (let i = 0; i < tvIntakeCount; i++) {
+        const sy = tvIntakeBankPos.y + (i - (tvIntakeCount - 1) / 2) * tvPitchM;
+        addRearPanelRectHole(tvIntakeBankPos.x, sy, tvSlotWM, tvSlotHM);
+      }
+      for (let i = 0; i < tvExhaustCount; i++) {
+        const sy = tvExhaustBankPos.y + (i - (tvExhaustCount - 1) / 2) * tvPitchM;
+        addRearPanelRectHole(tvExhaustBankPos.x, sy, tvSlotWM, tvSlotHM);
+      }
+    }
+
+    const rearGeo = new THREE.ExtrudeGeometry(rearShape, { depth: t, bevelEnabled: false, steps: 1 });
+    rearGeo.translate(0, 0, -t / 2);
 
     const rearMesh = new THREE.Mesh(rearGeo, currentRearMat);
     const rearBasePos = new THREE.Vector3(0, 0, -D / 2 + t / 2);
     registerComponent('panel_rear', rearMesh, rearBasePos, new THREE.Vector3(0, 0, -1), explDistBase * 1.2, true);
 
-    // 3. TOP & BOTTOM PANELS
-    const topBottomD = D - baffleT;
+    // 3. TOP & BOTTOM PANELS (with 38mm CNC Pole-Mount Socket Bore in Bottom Panel when showPoleMount is active)
     const topGeo = new THREE.BoxGeometry(W, t, topBottomD);
     const topMesh = new THREE.Mesh(topGeo, currentPanelMat);
     registerComponent('panel_top', topMesh, new THREE.Vector3(0, H / 2 - t / 2, -baffleT / 2), new THREE.Vector3(0, 1, 0), explDistBase, true);
 
-    const bottomGeo = new THREE.BoxGeometry(W, t, topBottomD);
+    // Resolve bottom pole cup Z coordinate & internal socket height so it never clashes with bottom slot port or woofer
+    const hasBottomSlotPort = Boolean(
+      acoustics.alignment === 'ported' &&
+      portComp &&
+      (isSlotFamily || acoustics.portType === 'slot' || portComp.isSlot)
+    );
+    const poleLocalZ = 0; // relative to panel_bottom center (-baffleT / 2)
+    const poleWorldZ = -baffleT / 2 + poleLocalZ;
+    let bottomGeo: THREE.BufferGeometry;
+    if (hwConfig.showPoleMount) {
+      const botShape = new THREE.Shape();
+      botShape.moveTo(-W / 2, -topBottomD / 2);
+      botShape.lineTo(W / 2, -topBottomD / 2);
+      botShape.lineTo(W / 2, topBottomD / 2);
+      botShape.lineTo(-W / 2, topBottomD / 2);
+      botShape.closePath();
+
+      const poleHole = new THREE.Path();
+      poleHole.absarc(0, poleLocalZ, 0.019, 0, Math.PI * 2, true);
+      botShape.holes.push(poleHole);
+
+      bottomGeo = new THREE.ExtrudeGeometry(botShape, { depth: t, bevelEnabled: false, steps: 1 });
+      bottomGeo.translate(0, 0, -t / 2);
+      bottomGeo.rotateX(Math.PI / 2);
+    } else {
+      bottomGeo = new THREE.BoxGeometry(W, t, topBottomD);
+    }
     const bottomMesh = new THREE.Mesh(bottomGeo, currentPanelMat);
     registerComponent('panel_bottom', bottomMesh, new THREE.Vector3(0, -H / 2 + t / 2, -baffleT / 2), new THREE.Vector3(0, -1, 0), explDistBase, true);
 
-    // 4. SIDE PANELS
-    const sideH = H - 2 * t;
-    const sideD = D - baffleT;
-    const leftSideMesh = new THREE.Mesh(new THREE.BoxGeometry(t, sideH, sideD), currentPanelMat);
+    // 4. SIDE PANELS (with CNC Recessed Handle Cutouts when showHandles is active, positioned clear of brace_window)
+    const handleH = Math.min(0.16, sideH * 0.25);
+    const handleW = Math.min(0.12, sideD * 0.36);
+    const handlePocketDepth = Math.min(0.022, t + 0.004);
+    const handleCutH = handleH * 0.82;
+    const handleCutW = handleW * 0.82;
+
+    const handleYOffsets: number[] = [];
+    if (hwConfig.showHandles) {
+      const isDualHandle = categoryKey === 'live_sub' && H >= 0.65;
+      const minHandleClearDist = handleH / 2 + t / 2 + 0.014;
+      if (isDualHandle) {
+        const rawTopY = sideH * 0.22;
+        const rawBotY = -sideH * 0.22;
+        const safeTopY =
+          Math.abs(rawTopY - braceY) < minHandleClearDist
+            ? Math.min(sideH / 2 - handleH / 2 - 0.012, braceY + minHandleClearDist)
+            : rawTopY;
+        const safeBotY =
+          Math.abs(rawBotY - braceY) < minHandleClearDist
+            ? Math.max(-sideH / 2 + handleH / 2 + 0.012, braceY - minHandleClearDist)
+            : rawBotY;
+        handleYOffsets.push(safeTopY, safeBotY);
+      } else {
+        const candYs = [0, sideH * 0.2, -sideH * 0.2, sideH * 0.28, -sideH * 0.28];
+        let bestHY = 0;
+        let maxBraceDist = -999;
+        for (const cy of candYs) {
+          if (Math.abs(cy) + handleH / 2 + 0.012 <= sideH / 2) {
+            const d = Math.abs(cy - braceY);
+            if (d > maxBraceDist) {
+              maxBraceDist = d;
+              bestHY = cy;
+            }
+          }
+        }
+        handleYOffsets.push(bestHY);
+      }
+    }
+
+    const buildSidePanelGeo = (): THREE.BufferGeometry => {
+      if (!hwConfig.showHandles || handleYOffsets.length === 0) {
+        return new THREE.BoxGeometry(t, sideH, sideD);
+      }
+      // Build in Z-Y plane (width = sideD, height = sideH), then extrude along X by thickness t
+      const sShape = new THREE.Shape();
+      sShape.moveTo(-sideD / 2, -sideH / 2);
+      sShape.lineTo(sideD / 2, -sideH / 2);
+      sShape.lineTo(sideD / 2, sideH / 2);
+      sShape.lineTo(-sideD / 2, sideH / 2);
+      sShape.closePath();
+
+      handleYOffsets.forEach((hy) => {
+        const z0 = Math.max(-sideD / 2 + 0.008, -handleCutW / 2);
+        const z1 = Math.min(sideD / 2 - 0.008, handleCutW / 2);
+        const y0 = Math.max(-sideH / 2 + 0.008, hy - handleCutH / 2);
+        const y1 = Math.min(sideH / 2 - 0.008, hy + handleCutH / 2);
+        if (z1 - z0 > 0.01 && y1 - y0 > 0.01) {
+          const hHole = new THREE.Path();
+          hHole.moveTo(z0, y0);
+          hHole.lineTo(z1, y0);
+          hHole.lineTo(z1, y1);
+          hHole.lineTo(z0, y1);
+          hHole.closePath();
+          sShape.holes.push(hHole);
+        }
+      });
+
+      const sGeo = new THREE.ExtrudeGeometry(sShape, { depth: t, bevelEnabled: false, steps: 1 });
+      sGeo.translate(0, 0, -t / 2);
+      sGeo.rotateY(Math.PI / 2);
+      return sGeo;
+    };
+
+    const leftSideMesh = new THREE.Mesh(buildSidePanelGeo(), currentPanelMat);
     registerComponent('panel_left', leftSideMesh, new THREE.Vector3(-W / 2 + t / 2, 0, -baffleT / 2), new THREE.Vector3(-1, 0, 0), explDistBase, true);
 
-    const rightSideMesh = new THREE.Mesh(new THREE.BoxGeometry(t, sideH, sideD), currentPanelMat);
+    const rightSideMesh = new THREE.Mesh(buildSidePanelGeo(), currentPanelMat);
     registerComponent('panel_right', rightSideMesh, new THREE.Vector3(W / 2 - t / 2, 0, -baffleT / 2), new THREE.Vector3(1, 0, 0), explDistBase, true);
 
-    // 5. INTERNAL WINDOW MATRIX BRACE
-    const braceW = W - 2 * t - 0.002;
-    const braceD = D - baffleT - t - 0.002;
+    // 5. INTERNAL WINDOW MATRIX BRACE (Collision-Free Y & Z Span with Airflow Relief & Cable Routing)
     const braceShape = new THREE.Shape();
     braceShape.moveTo(-braceW / 2, -braceD / 2);
     braceShape.lineTo(braceW / 2, -braceD / 2);
@@ -842,24 +1374,41 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
     braceShape.lineTo(-braceW / 2, braceD / 2);
     braceShape.closePath();
 
-    const holeRadius = Math.min(braceW, braceD) * 0.18;
+    const holeRadius = Math.min(braceW, braceD) * 0.17;
     const holeOffX = braceW * 0.24;
-    const holeOffY = braceD * 0.24;
-    [[ -holeOffX, -holeOffY ], [ holeOffX, -holeOffY ], [ -holeOffX, holeOffY ], [ holeOffX, holeOffY ]].forEach(([hx, hy]) => {
-      const hPath = new THREE.Path();
-      hPath.absarc(hx, hy, holeRadius, 0, Math.PI * 2, true);
-      braceShape.holes.push(hPath);
+    const holeOffY = braceD * 0.23;
+    const airflowHoles = [
+      [-holeOffX, -holeOffY],
+      [holeOffX, -holeOffY],
+      [-holeOffX, holeOffY],
+      [holeOffX, holeOffY],
+    ];
+    if (holeRadius > 0.008) {
+      airflowHoles.forEach(([hx, hy]) => {
+        const hPath = new THREE.Path();
+        hPath.absarc(hx, hy, holeRadius, 0, Math.PI * 2, true);
+        braceShape.holes.push(hPath);
+      });
+    }
+
+    // 2x Dedicated CNC Cable Routing Channels (Wire Harness Conduits with Silicone Grommets)
+    const cableHoleRadius = Math.max(0.009, Math.min(0.014, Math.min(braceW, braceD) * 0.048));
+    const cableHoles = [
+      [0, -holeOffY * 0.88], // Rearward wire pass-through (aligned with rear crossover & Speakon dish)
+      [0, holeOffY * 0.88],  // Forward wire pass-through (aligned with front drivers)
+    ];
+    cableHoles.forEach(([cx, cy]) => {
+      const cPath = new THREE.Path();
+      cPath.absarc(cx, cy, cableHoleRadius, 0, Math.PI * 2, true);
+      braceShape.holes.push(cPath);
     });
 
     const braceGeo = new THREE.ExtrudeGeometry(braceShape, {
       depth: t,
-      bevelEnabled: true,
-      bevelSegments: 1,
+      bevelEnabled: false,
       steps: 1,
-      bevelSize: 0.0005,
-      bevelThickness: 0.0005,
     });
-    braceGeo.center();
+    braceGeo.translate(0, 0, -t / 2);
 
     const braceMat = new THREE.MeshStandardMaterial({
       color: '#c29b68',
@@ -869,64 +1418,266 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
     });
 
     const braceMesh = new THREE.Mesh(braceGeo, braceMat);
-    braceMesh.rotation.x = Math.PI / 2;
-    registerComponent('brace_window', braceMesh, new THREE.Vector3(0, -H * 0.05, -baffleT / 2 - t / 2), new THREE.Vector3(0, 0.4, 0), explDistBase * 0.4, false);
 
-    // 6. BUILD 3D DRIVER ASSEMBLIES FOR EACH PASSBAND (Collision-Free)
-    const isCoaxial = !!results.subcategoryTelemetry?.isCoaxial || dimensions.subcategory === 'coaxial_point_source';
-    frontDrivers.forEach((dp, idx) => {
-      const drvPreset = dp.role === 'tweeter' ? tweeter : (dp.role === 'midrange' ? midrange : woofer);
-      const isWooferCoaxial = dp.role === 'woofer' && isCoaxial;
-      const driverGroup = build3DDriverAssembly(drvPreset, scale, isCutawayMode, clipPlaneRef, isWooferCoaxial);
-      const driverBasePos = new THREE.Vector3(dp.centerX * scale, dp.centerY * scale, D / 2);
-      registerComponent(`driver_${dp.role}_${idx}`, driverGroup, driverBasePos, new THREE.Vector3(0, 0, 1), explDistBase * 1.5, false);
+    // --- 3D VISUAL INDICATORS FOR INTERNAL PANEL HOLES ---
+    // 1. Airflow Relief Aperture Indicators (Aerodynamic Cyan Rims & Laminar Streamline Guides)
+    const airflowRimMat = new THREE.MeshStandardMaterial({
+      color: '#06b6d4',
+      emissive: '#0891b2',
+      emissiveIntensity: 0.6,
+      roughness: 0.25,
+      metalness: 0.8,
+      clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+    });
+    const streamlineMat = new THREE.MeshStandardMaterial({
+      color: '#38bdf8',
+      transparent: true,
+      opacity: 0.42,
+      roughness: 0.3,
+      metalness: 0.1,
+      clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
     });
 
-    // 7. MIDRANGE REAR ISOLATED SUB-CHAMBER (3-Way)
-    if (topology === 'three_way') {
-      const midBoxW = Math.max(0.12, (midrange.frameOuterDiameterMm * scale) + 0.02);
-      const midBoxH = midBoxW;
-      const midBoxD = 0.14;
-      const midChamberGeo = new THREE.BoxGeometry(midBoxW, midBoxH, midBoxD);
-      const midChamberMat = new THREE.MeshStandardMaterial({
-        color: '#ab8251',
-        roughness: 0.7,
-        metalness: 0.05,
-        clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+    if (holeRadius > 0.008) {
+      airflowHoles.forEach(([hx, hy]) => {
+        // Aerodynamic entrance and exit chamfer rims on both panel faces
+        [-t / 2 - 0.0006, t / 2 + 0.0006].forEach((rimZ) => {
+          const rimMesh = new THREE.Mesh(
+            new THREE.TorusGeometry(holeRadius, 0.0018, 12, 36),
+            airflowRimMat
+          );
+          rimMesh.position.set(hx, hy, rimZ);
+          braceMesh.add(rimMesh);
+        });
+
+        // Laminar airflow streamline flow cylinder passing vertically through the aperture
+        const streamlineMesh = new THREE.Mesh(
+          new THREE.CylinderGeometry(holeRadius * 0.52, holeRadius * 0.52, t * 2.6, 24, 1, true),
+          streamlineMat
+        );
+        streamlineMesh.rotation.x = Math.PI / 2;
+        streamlineMesh.position.set(hx, hy, 0);
+        braceMesh.add(streamlineMesh);
       });
-      const midChamberMesh = new THREE.Mesh(midChamberGeo, midChamberMat);
-      const midComp = frontDrivers.find((d) => d.role === 'midrange');
-      const midY = midComp ? midComp.centerY * scale : H * 0.08;
-      registerComponent('midrange_chamber', midChamberMesh, new THREE.Vector3(0, midY, D / 2 - baffleT - midBoxD / 2), new THREE.Vector3(0, 0.2, -0.4), explDistBase * 0.6, false);
     }
 
-    // 8. CUSTOM PARAMETRIC PORT SYNTHESIS & MANIFOLD MESH (6 Profiles)
+    // 2. Cable Routing Channel Indicators (Silicone Isolation Grommets & Twisted-Pair Wire Harness)
+    const grommetMat = new THREE.MeshStandardMaterial({
+      color: '#d97706',
+      roughness: 0.5,
+      metalness: 0.2,
+      clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+    });
+    const wireRedMat = new THREE.MeshStandardMaterial({
+      color: '#ef4444',
+      roughness: 0.4,
+      metalness: 0.3,
+      clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+    });
+    const wireBlackMat = new THREE.MeshStandardMaterial({
+      color: '#1e293b',
+      roughness: 0.5,
+      metalness: 0.2,
+      clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+    });
+
+    cableHoles.forEach(([cx, cy]) => {
+      // Silicone anti-chafe isolation grommet body
+      const grommetMesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(cableHoleRadius + 0.0028, cableHoleRadius + 0.0028, t + 0.006, 24),
+        grommetMat
+      );
+      grommetMesh.rotation.x = Math.PI / 2;
+      grommetMesh.position.set(cx, cy, 0);
+      braceMesh.add(grommetMesh);
+
+      // Grommet top & bottom retaining flange collars
+      [-t / 2 - 0.003, t / 2 + 0.003].forEach((fgZ) => {
+        const fgMesh = new THREE.Mesh(
+          new THREE.TorusGeometry(cableHoleRadius + 0.002, 0.0018, 12, 24),
+          grommetMat
+        );
+        fgMesh.position.set(cx, cy, fgZ);
+        braceMesh.add(fgMesh);
+      });
+
+      // Twisted-pair wiring bundle (Positive Red + Negative Black OFC wire) passing through grommet
+      const wireH = t * 3.4;
+      const wireR = Math.min(0.0028, cableHoleRadius * 0.3);
+      const wire1 = new THREE.Mesh(new THREE.CylinderGeometry(wireR, wireR, wireH, 12), wireRedMat);
+      wire1.rotation.x = Math.PI / 2;
+      wire1.position.set(cx - wireR * 0.85, cy, 0);
+      braceMesh.add(wire1);
+
+      const wire2 = new THREE.Mesh(new THREE.CylinderGeometry(wireR, wireR, wireH, 12), wireBlackMat);
+      wire2.rotation.x = Math.PI / 2;
+      wire2.position.set(cx + wireR * 0.85, cy, 0);
+      braceMesh.add(wire2);
+    });
+
+    // 3. Anchor Objects for Viewport Projected Leader Lines
+    const airflowAnchorObj = new THREE.Object3D();
+    airflowAnchorObj.position.set(holeOffX, holeOffY, t / 2 + 0.004);
+    braceMesh.add(airflowAnchorObj);
+    airflowAnchorObjRef.current = airflowAnchorObj;
+
+    const cableAnchorObj = new THREE.Object3D();
+    cableAnchorObj.position.set(0, holeOffY * 0.88, t / 2 + 0.004);
+    braceMesh.add(cableAnchorObj);
+    cableAnchorObjRef.current = cableAnchorObj;
+
+    braceMesh.rotation.x = Math.PI / 2;
+    registerComponent(
+      'brace_window',
+      braceMesh,
+      new THREE.Vector3(0, braceY, braceZ),
+      new THREE.Vector3(0, 0.4, 0),
+      explDistBase * 0.4,
+      false
+    );
+
+    // 6. BUILD 3D DRIVER ASSEMBLIES FOR EACH PASSBAND (Clamped to Clear Internal Cavity & Baffle Cutout Bore)
+    const isCoaxial =
+      !!results.subcategoryTelemetry?.isCoaxial ||
+      dimensions.subcategory === 'coaxial_point_source';
+    const maxSafeDriverMountDepthM = Math.max(
+      0.035,
+      D - baffleT - t - (rearDampingReserveMm * scale) - 0.018
+    );
+    frontDrivers.forEach((dp, idx) => {
+      const drvPreset =
+        dp.role === 'tweeter' ? tweeter : dp.role === 'midrange' ? midrange : woofer;
+      const isWooferCoaxial = dp.role === 'woofer' && isCoaxial;
+      // For 3-way midrange driver, leave room for the rear cap of midrange_chamber behind the magnet
+      const roleMaxDepthM =
+        dp.role === 'midrange' && topology === 'three_way'
+          ? Math.min(maxSafeDriverMountDepthM * 0.68, (midrange.mountingDepthMm * scale))
+          : maxSafeDriverMountDepthM;
+      const driverGroup = build3DDriverAssembly(
+        drvPreset,
+        scale,
+        isCutawayMode,
+        clipPlaneRef,
+        isWooferCoaxial,
+        roleMaxDepthM,
+        baffleT
+      );
+      const driverBasePos = new THREE.Vector3(dp.centerX * scale, dp.centerY * scale, D / 2);
+      registerComponent(
+        `driver_${dp.role}_${idx}`,
+        driverGroup,
+        driverBasePos,
+        new THREE.Vector3(0, 0, 1),
+        explDistBase * 1.5,
+        false
+      );
+    });
+
+    // 7. MIDRANGE REAR ISOLATED SUB-CHAMBER (Exponentially Tapered Nautilus Absorber Spine: S(x) = S_0 * exp(-2*alpha_t*x))
+    if (topology === 'three_way') {
+      const midComp = frontDrivers.find((d) => d.role === 'midrange');
+      const midX = midComp ? midComp.centerX * scale : 0;
+      const midY = midComp ? midComp.centerY * scale : H * 0.08;
+      const midCutoutRM = ((midComp?.cutoutRadiusMm ?? midrange.cutoutDiameterMm / 2) * scale);
+      const midOuterFlangeRM = ((midComp?.outerRadiusMm ?? midrange.frameOuterDiameterMm / 2) * scale);
+      // Hollow open-front throat: inner radius clears the midrange basket/magnet; outer radius stays inside midrange outer flange so it never touches brace_window
+      const shellInnerR = midCutoutRM + 0.002;
+      const shellOuterR = Math.max(shellInnerR + 0.004, Math.min(midOuterFlangeRM - 0.002, shellInnerR + 0.008));
+      const midActualDepthM = Math.min(maxSafeDriverMountDepthM * 0.68, midrange.mountingDepthMm * scale);
+      const throatCylLenM = Math.max(0.038, midActualDepthM - baffleT + 0.008);
+      const nautilusTaperLenM = Math.max(
+        0.025,
+        Math.min(0.065, maxSafeDriverMountDepthM * 0.92 - throatCylLenM)
+      );
+      const midChamberDepthM = throatCylLenM + nautilusTaperLenM;
+
+      const midChamberGroup = new THREE.Group();
+      const midChamberMat = new THREE.MeshStandardMaterial({
+        color: '#ab8251',
+        roughness: 0.62,
+        metalness: 0.08,
+        side: THREE.DoubleSide,
+        clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+      });
+
+      // 1. Front cylindrical throat section (extruded ring clearing midrange basket & magnet)
+      const wallRingShape = new THREE.Shape();
+      wallRingShape.absarc(0, 0, shellOuterR, 0, Math.PI * 2, false);
+      const wallInnerHole = new THREE.Path();
+      wallInnerHole.absarc(0, 0, shellInnerR, 0, Math.PI * 2, true);
+      wallRingShape.holes.push(wallInnerHole);
+
+      const wallTubeGeo = new THREE.ExtrudeGeometry(wallRingShape, {
+        depth: throatCylLenM,
+        bevelEnabled: false,
+        steps: 1,
+        curveSegments: 32,
+      });
+      wallTubeGeo.translate(0, 0, midChamberDepthM / 2 - throatCylLenM);
+      const wallTubeMesh = new THREE.Mesh(wallTubeGeo, midChamberMat);
+      midChamberGroup.add(wallTubeMesh);
+
+      // 2. Exponentially Tapered Nautilus Termination Spine behind magnet: r(x) = r_0 * exp(-alpha_t * x)
+      const apexOuterR = Math.max(0.009, shellOuterR * 0.22);
+      const alphaTaper = Math.log(shellOuterR / apexOuterR) / Math.max(0.015, nautilusTaperLenM);
+      const lathePts: THREE.Vector2[] = [];
+      const taperSteps = 16;
+      for (let i = 0; i <= taperSteps; i++) {
+        const u = i / taperSteps; // 0 at throat junction, 1 at rear apex
+        const xDist = u * nautilusTaperLenM;
+        const rOuterAtX = shellOuterR * Math.exp(-alphaTaper * xDist);
+        const yLathe = midChamberDepthM / 2 - throatCylLenM - xDist;
+        lathePts.push(new THREE.Vector2(rOuterAtX, yLathe));
+      }
+      // Close rear apex tip
+      lathePts.push(new THREE.Vector2(0, -midChamberDepthM / 2));
+
+      const nautilusLatheGeo = new THREE.LatheGeometry(lathePts, 36);
+      nautilusLatheGeo.rotateX(Math.PI / 2);
+      const nautilusMesh = new THREE.Mesh(nautilusLatheGeo, midChamberMat);
+      midChamberGroup.add(nautilusMesh);
+
+      // 3. Graded internal acoustic metamaterial / carded-wool damping rings inside the Nautilus spine
+      const gradedRingMat = new THREE.MeshStandardMaterial({
+        color: '#0ea5e9',
+        transparent: true,
+        opacity: 0.45,
+        roughness: 0.4,
+        metalness: 0.2,
+        clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+      });
+      [0.25, 0.55, 0.82].forEach((uFrac) => {
+        const xDist = uFrac * nautilusTaperLenM;
+        const rRing = shellOuterR * Math.exp(-alphaTaper * xDist) * 0.88;
+        if (rRing > 0.006) {
+          const ringMesh = new THREE.Mesh(
+            new THREE.TorusGeometry(rRing, 0.0014, 10, 28),
+            gradedRingMat
+          );
+          ringMesh.position.z = midChamberDepthM / 2 - throatCylLenM - xDist;
+          midChamberGroup.add(ringMesh);
+        }
+      });
+
+      registerComponent(
+        'midrange_chamber',
+        midChamberGroup,
+        new THREE.Vector3(midX, midY, D / 2 - baffleT - 0.002 - midChamberDepthM / 2),
+        new THREE.Vector3(0, 0.2, -0.4),
+        explDistBase * 0.6,
+        false
+      );
+    }
+
+    // 8. CUSTOM PARAMETRIC PORT SYNTHESIS & MANIFOLD MESH (6 Profiles, Clamped Axial & Vertical Bounds)
     if (acoustics.alignment === 'ported' && portComp) {
       const activePortLenMm = results.parametricPort?.effectiveLengthMm || results.portLengthMm;
       const portLengthM = activePortLenMm * scale;
       const isRearPort = portComp.panel === 'rear';
-      const usableCavityDepthM = Math.max(0.03, D - baffleT - t);
-      const maxAxialM = Math.max(0.024, usableCavityDepthM - 0.025);
-
-      let activeProfile =
-        results.parametricPort?.profileType ||
-        acoustics.parametricPortConfig?.profileType ||
-        (acoustics.portType === 'slot' ? 'rectilinear_slot' : 'circular_bellmouth');
-
-      const isProfileSlotFamily =
-        activeProfile === 'rectilinear_slot' ||
-        activeProfile === 'folded_l_conduit' ||
-        activeProfile === 'folded_u_conduit';
-      if (acoustics.portType === 'round' && isProfileSlotFamily) {
-        activeProfile = 'circular_bellmouth';
-      } else if (acoustics.portType === 'slot' && !isProfileSlotFamily) {
-        activeProfile = 'rectilinear_slot';
-      }
-
-      const isSlotFamily =
-        activeProfile === 'rectilinear_slot' ||
-        activeProfile === 'folded_l_conduit' ||
-        activeProfile === 'folded_u_conduit';
+      const maxAxialM = Math.max(
+        0.024,
+        Math.min(usableCavityDepthM * 0.54, usableCavityDepthM - (rearDampingReserveMm * scale) - 0.04)
+      );
 
       const foldDown = portComp.centerY > 0;
       const manifoldPortGroup = buildParametricPortManifoldGroup(
@@ -955,47 +1706,44 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
           portComp.outerRadiusMm * scale,
           Math.max(0.02, Math.min(W, H) / 2 - t - 0.01)
         );
-        const portCenterX = Math.max(
-          -W / 2 + t + outerR,
-          Math.min(W / 2 - t - outerR, portComp.centerX * scale)
-        );
-        const portCenterY = Math.max(
-          -H / 2 + t + outerR,
-          Math.min(H / 2 - t - outerR, portComp.centerY * scale)
-        );
-        const rawPortBaseZ = isRearPort ? (-D / 2 + axialLenM / 2) : (D / 2 - axialLenM / 2);
-        const portBaseZ = Math.max(
-          -D / 2 + t + axialLenM / 2 - 0.008,
-          Math.min(D / 2 - baffleT - axialLenM / 2 + 0.008, rawPortBaseZ)
-        );
+        const portCenterX = isRearPort
+          ? rearPortCenterXM
+          : Math.max(-W / 2 + t + outerR, Math.min(W / 2 - t - outerR, portComp.centerX * scale));
+        const portCenterY = isRearPort
+          ? rearPortCenterYM
+          : Math.max(-H / 2 + t + outerR, Math.min(H / 2 - t - outerR, portComp.centerY * scale));
+        // Inset by 1.5mm from inner baffle face so port collar and flare rim sit cleanly inside the cavity without intersecting the baffle wood
+        const portBaseZ = isRearPort
+          ? -D / 2 + t + 0.0015 + axialLenM / 2
+          : D / 2 - baffleT - 0.0015 - axialLenM / 2;
         const portBasePos = new THREE.Vector3(portCenterX, portCenterY, portBaseZ);
         const explDir = isRearPort ? new THREE.Vector3(0, 0, -1) : new THREE.Vector3(0, 0, 1);
         registerComponent('port_tube', manifoldPortGroup, portBasePos, explDir, explDistBase * 0.9, false);
       } else {
         const leg1M = Math.min(
-          Math.max(0.03, (results.parametricPort?.legLengthsMm?.[0] || activePortLenMm) * scale),
+          Math.max(0.04, (results.parametricPort?.legLengthsMm?.[0] || activePortLenMm) * scale),
           maxAxialM
         );
-        const slotH = Math.max(0.02, (portComp.slotHeightMm || acoustics.slotHeightMm || 45) * scale);
+        const slotH = isRearPort
+          ? rearSlotHM
+          : Math.max(0.02, (portComp.slotHeightMm || acoustics.slotHeightMm || 45) * scale);
+        const baseCenterY = isRearPort ? rearPortCenterYM : portComp.centerY * scale;
         const rawSlotBaseY =
-          portComp.centerY * scale + (foldDown ? -(slotH / 2 + t / 2) : (slotH / 2 + t / 2));
+          baseCenterY + (foldDown ? -(slotH / 2 + t / 2) : (slotH / 2 + t / 2));
         const slotBaseY = Math.max(
           -H / 2 + t + 0.015,
           Math.min(H / 2 - t - 0.015, rawSlotBaseY)
         );
-        const rawSlotBaseZ = isRearPort ? (-D / 2 + leg1M / 2 + t) : (D / 2 - leg1M / 2 - baffleT);
-        const slotBaseZ = Math.max(
-          -D / 2 + t + leg1M / 2,
-          Math.min(D / 2 - baffleT - leg1M / 2, rawSlotBaseZ)
-        );
+        const slotBaseZ = isRearPort
+          ? -D / 2 + t + 0.0015 + leg1M / 2
+          : D / 2 - baffleT - 0.0015 - leg1M / 2;
         const slotBasePos = new THREE.Vector3(0, slotBaseY, slotBaseZ);
         registerComponent('port_slot_board', manifoldPortGroup, slotBasePos, new THREE.Vector3(0, -0.3, isRearPort ? -0.5 : 0.5), explDistBase * 0.5, false);
       }
     }
 
-    // 9. DAMPING TREATMENT & INTEGRAL 3D-PRINTED ACOUSTIC MATRIX
+    // 9. COORDINATED ACOUSTIC DAMPING TREATMENT (Cutout-Contoured around PCB, Terminal Dish, Plate Amp, and Rear Port)
     if (results.additiveAcousticReport && results.additiveAcousticReport.enabled) {
-      // Monolithic 3D-printed internal TPMS core and rear acoustic labyrinth trap
       const additiveGroup = buildAdditiveAcousticGroup(
         dimensions,
         results.additiveAcousticReport,
@@ -1012,7 +1760,6 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
         false
       );
     } else {
-      // Conventional damping foam fallback
       const foamTex = createAcousticFoamTexture();
       const foamMat = new THREE.MeshStandardMaterial({
         map: foamTex,
@@ -1021,60 +1768,121 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
         clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
       });
       const dampingGroup = new THREE.Group();
-      const rearFoamMesh = new THREE.Mesh(new THREE.BoxGeometry(rearW * 0.92, rearH * 0.85, 0.035), foamMat);
-      rearFoamMesh.position.set(0, 0, -D / 2 + t + 0.018);
+      const fw = rearW * 0.9;
+      const fh = rearH * 0.84;
+      const foamShape = new THREE.Shape();
+      foamShape.moveTo(-fw / 2, -fh / 2);
+      foamShape.lineTo(fw / 2, -fh / 2);
+      foamShape.lineTo(fw / 2, fh / 2);
+      foamShape.lineTo(-fw / 2, fh / 2);
+      foamShape.closePath();
+
+      // Merge any overlapping clearance rectangles on the foam sheet so THREE.Shape.holes never self-intersects
+      const rawFoamCutouts: { x0: number; y0: number; x1: number; y1: number }[] = [];
+      const queueFoamCutout = (cx: number, cy: number, cw: number, ch: number) => {
+        const x0 = Math.max(-fw / 2 + 0.006, cx - cw / 2);
+        const x1 = Math.min(fw / 2 - 0.006, cx + cw / 2);
+        const y0 = Math.max(-fh / 2 + 0.006, cy - ch / 2);
+        const y1 = Math.min(fh / 2 - 0.006, cy + ch / 2);
+        if (x1 - x0 > 0.012 && y1 - y0 > 0.012) {
+          rawFoamCutouts.push({ x0, y0, x1, y1 });
+        }
+      };
+
+      queueFoamCutout(crossoverPosX, crossoverBaseY, pcbW + 0.012, pcbH + 0.012);
+      if (spk) {
+        queueFoamCutout(dishPosX, dishPosY, dishW + 0.012, dishH + 0.012);
+      }
+      if (hasPlateAmp) {
+        queueFoamCutout(ampPosX, ampPosY, ampPlateW + 0.012, ampPlateH + 0.012);
+      }
+      if (hasThermalVents) {
+        queueFoamCutout(tvIntakeBankPos.x, tvIntakeBankPos.y, tvBankWM + 0.012, tvIntakeBankHM + 0.012);
+        queueFoamCutout(tvExhaustBankPos.x, tvExhaustBankPos.y, tvBankWM + 0.012, tvExhaustBankHM + 0.012);
+      }
+      if (isRearPortActive && portComp) {
+        if (isSlotFamily || acoustics.portType === 'slot' || portComp.isSlot) {
+          queueFoamCutout(rearPortCenterXM, rearPortCenterYM + t / 2, rearSlotWM + 0.016, rearSlotHM + t + 0.016);
+        } else {
+          const pr = (portComp.outerRadiusMm * scale) + 0.012;
+          queueFoamCutout(rearPortCenterXM, rearPortCenterYM, pr * 2, pr * 2);
+        }
+      }
+
+      // Iteratively merge any touching/overlapping rectangles so holes are strictly disjoint
+      let merged = true;
+      while (merged) {
+        merged = false;
+        for (let i = 0; i < rawFoamCutouts.length; i++) {
+          for (let j = i + 1; j < rawFoamCutouts.length; j++) {
+            const a = rawFoamCutouts[i];
+            const b = rawFoamCutouts[j];
+            if (a.x0 <= b.x1 + 0.004 && a.x1 >= b.x0 - 0.004 && a.y0 <= b.y1 + 0.004 && a.y1 >= b.y0 - 0.004) {
+              a.x0 = Math.min(a.x0, b.x0);
+              a.y0 = Math.min(a.y0, b.y0);
+              a.x1 = Math.max(a.x1, b.x1);
+              a.y1 = Math.max(a.y1, b.y1);
+              rawFoamCutouts.splice(j, 1);
+              merged = true;
+              break;
+            }
+          }
+          if (merged) break;
+        }
+      }
+
+      rawFoamCutouts.forEach((rc) => {
+        const hole = new THREE.Path();
+        hole.moveTo(rc.x0, rc.y0);
+        hole.lineTo(rc.x1, rc.y0);
+        hole.lineTo(rc.x1, rc.y1);
+        hole.lineTo(rc.x0, rc.y1);
+        hole.closePath();
+        foamShape.holes.push(hole);
+      });
+
+      const foamGeo = new THREE.ExtrudeGeometry(foamShape, {
+        depth: foamThicknessM,
+        bevelEnabled: false,
+      });
+      foamGeo.translate(0, 0, -foamThicknessM / 2);
+      const rearFoamMesh = new THREE.Mesh(foamGeo, foamMat);
+      rearFoamMesh.position.set(0, 0, -D / 2 + t + foamThicknessM / 2 + 0.0015);
       dampingGroup.add(rearFoamMesh);
       registerComponent('damping_treatment', dampingGroup, new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -0.5), explDistBase * 0.5, false);
     }
 
-    // 10. POPULATED CROSSOVER PCB ON REAR PANEL
+    // 10. POPULATED INTERNAL CROSSOVER PCB (Mounted flush inside rear foam cutout window)
     const pcbGroup = new THREE.Group();
     const pcbTex = createPCBTexture();
     const pcbMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(0.16, 0.12, 0.003),
+      new THREE.BoxGeometry(pcbW, pcbH, 0.003),
       new THREE.MeshStandardMaterial({ map: pcbTex, roughness: 0.4, metalness: 0.4, clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [] })
     );
     pcbGroup.add(pcbMesh);
 
-    // Render 3D Copper Air-Core Inductor Coils
     const copperMat = new THREE.MeshStandardMaterial({ color: '#c4662d', metalness: 0.85, roughness: 0.25, clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [] });
-    [[-0.04, 0.03], [0.04, 0.03]].forEach(([cx, cy]) => {
-      const coilMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.02, 20), copperMat);
-      coilMesh.position.set(cx, cy, 0.012);
+    [[-pcbW * 0.24, pcbH * 0.22], [pcbW * 0.24, pcbH * 0.22]].forEach(([cx, cy]) => {
+      const coilMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.014, 20), copperMat);
+      coilMesh.position.set(cx, cy, 0.0085);
       pcbGroup.add(coilMesh);
     });
 
-    // Render 3D Film Capacitor Cylinders
     const capMat = new THREE.MeshStandardMaterial({ color: '#2563eb', metalness: 0.3, roughness: 0.4, clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [] });
-    [[-0.03, -0.02], [0.03, -0.02]].forEach(([cx, cy]) => {
-      const capMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 0.028, 16), capMat);
+    [[-pcbW * 0.2, -pcbH * 0.2], [pcbW * 0.2, -pcbH * 0.2]].forEach(([cx, cy]) => {
+      const capMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.02, 16), capMat);
       capMesh.rotation.z = Math.PI / 2;
-      capMesh.position.set(cx, cy, 0.008);
+      capMesh.position.set(cx, cy, 0.007);
       pcbGroup.add(capMesh);
     });
 
-    // Gold Binding Posts
     const goldMat = new THREE.MeshStandardMaterial({ color: '#ffd043', metalness: 0.95, roughness: 0.15, clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [] });
-    [-0.02, 0.02].forEach((px) => {
-      const postMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.025, 16), goldMat);
-      postMesh.rotation.x = Math.PI / 2;
-      postMesh.position.set(px, -0.04, -0.015);
-      pcbGroup.add(postMesh);
-    });
-
-    // Offset crossover PCB if rear port is active so they never clash
-    const isRearPortActive = portComp && portComp.panel === 'rear';
-    const crossoverBaseY = isRearPortActive ? -rearH * 0.28 : -H * 0.22;
-    const terminalBasePos = new THREE.Vector3(0, crossoverBaseY, -D / 2 + t);
+    const terminalBasePos = new THREE.Vector3(crossoverPosX, crossoverBaseY, -D / 2 + t + 0.003);
     registerComponent('crossover_pcb', pcbGroup, terminalBasePos, new THREE.Vector3(0, 0, -1), explDistBase * 1.3, false);
 
-    // 10B. NEUTRIK SPEAKON (NL4 / NL8) REAR TERMINAL DISH & CHASSIS CONNECTORS
-    if (results.speakonReport) {
-      const spk = results.speakonReport;
+    // 10B. NEUTRIK SPEAKON (NL4 / NL8) OR STUDIO TERMINAL DISH (Mounted cleanly through rear panel cutout)
+    if (spk) {
       const dishGroup = new THREE.Group();
-      const dishW = spk.dishWidthMm * scale;
-      const dishH = spk.dishHeightMm * scale;
-      const dishPocketD = spk.dishPocketDepthMm * scale;
 
       const steelDishMat = new THREE.MeshStandardMaterial({
         color: '#11151c',
@@ -1108,19 +1916,20 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
         wireframe: isWireframeMode,
       });
 
-      // Outer mounting bezel + recessed dish/cup backplate
+      // Outer mounting bezel sitting flush on exterior of panel_rear (z < 0 in dishGroup local coords)
       const bezelMesh = new THREE.Mesh(new THREE.BoxGeometry(dishW, dishH, 0.0025), steelDishMat);
+      bezelMesh.position.z = -0.0015;
       dishGroup.add(bezelMesh);
 
+      // Recessed pocket passing cleanly through the dishCutW x dishCutH cutout in panel_rear
       const pocketMesh = new THREE.Mesh(
-        new THREE.BoxGeometry(dishW * 0.86, dishH * 0.82, dishPocketD),
+        new THREE.BoxGeometry(dishCutW - 0.002, dishCutH - 0.002, dishPocketD),
         steelDishMat
       );
       pocketMesh.position.z = dishPocketD / 2;
       dishGroup.add(pocketMesh);
 
       if (spk.connectorModel === 'binding_posts_gold') {
-        // --- STUDIO PASSIVE RECESSED CUP WITH 4× GOLD 5-WAY BINDING POSTS & BI-WIRE JUMPERS ---
         const postMat = new THREE.MeshStandardMaterial({
           color: '#fbbf24',
           metalness: 0.95,
@@ -1141,203 +1950,104 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
           clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
         });
 
-        // 4 Posts: (x: -16mm, +16mm) x (y: +18mm HF, -18mm LF)
+        const pxOff = Math.min(0.016, dishCutW * 0.22);
+        const pyOff = Math.min(0.018, dishCutH * 0.22);
         const postCoords = [
-          { x: -0.016, y: 0.018, isPos: false, label: 'HF-' },
-          { x: 0.016, y: 0.018, isPos: true, label: 'HF+' },
-          { x: -0.016, y: -0.018, isPos: false, label: 'LF-' },
-          { x: 0.016, y: -0.018, isPos: true, label: 'LF+' },
+          { x: -pxOff, y: pyOff, isPos: false },
+          { x: pxOff, y: pyOff, isPos: true },
+          { x: -pxOff, y: -pyOff, isPos: false },
+          { x: pxOff, y: -pyOff, isPos: true },
         ];
 
         postCoords.forEach((pt) => {
           const postSub = new THREE.Group();
-          postSub.position.set(pt.x, pt.y, -0.002);
+          postSub.position.set(pt.x, pt.y, -0.003);
 
-          // Knurled thumbnut shaft
-          const shaftGeo = new THREE.CylinderGeometry(0.0055, 0.0055, 0.018, 16);
+          const shaftGeo = new THREE.CylinderGeometry(0.0045, 0.0045, 0.014, 16);
           shaftGeo.rotateX(Math.PI / 2);
           const shaftMesh = new THREE.Mesh(shaftGeo, postMat);
-          shaftMesh.position.z = -0.007;
+          shaftMesh.position.z = -0.006;
           postSub.add(shaftMesh);
 
-          // Colored identification ring (Red for +, Black for -)
-          const ringGeo = new THREE.CylinderGeometry(0.0062, 0.0062, 0.004, 16);
+          const ringGeo = new THREE.CylinderGeometry(0.0052, 0.0052, 0.0035, 16);
           ringGeo.rotateX(Math.PI / 2);
           const ringMesh = new THREE.Mesh(ringGeo, pt.isPos ? redRingMat : blkRingMat);
-          ringMesh.position.z = -0.013;
+          ringMesh.position.z = -0.011;
           postSub.add(ringMesh);
 
-          // 4mm central banana plug aperture
-          const holeGeo = new THREE.CylinderGeometry(0.002, 0.002, 0.006, 12);
-          holeGeo.rotateX(Math.PI / 2);
-          const holeMesh = new THREE.Mesh(holeGeo, blkRingMat);
-          holeMesh.position.z = -0.015;
-          postSub.add(holeMesh);
-
-          // Internal solder lug extending inside cabinet
-          const lugMesh = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.001, 0.015), postMat);
-          lugMesh.position.set(0, 0, dishPocketD + 0.006);
+          const lugMesh = new THREE.Mesh(new THREE.BoxGeometry(0.0035, 0.001, 0.01), postMat);
+          lugMesh.position.set(0, 0, dishPocketD + 0.004);
           postSub.add(lugMesh);
 
           dishGroup.add(postSub);
         });
 
-        // 2× Solid Brass Gold-Plated Bi-Wire Jumper Bars linking HF and LF
-        [-0.016, 0.016].forEach((jx) => {
+        [-pxOff, pxOff].forEach((jx) => {
           const jumperBar = new THREE.Mesh(
-            new THREE.BoxGeometry(0.0045, 0.036, 0.0015),
+            new THREE.BoxGeometry(0.004, pyOff * 2, 0.0015),
             postMat
           );
           jumperBar.position.set(jx, 0, -0.005);
           dishGroup.add(jumperBar);
         });
-
-        // 4-corner M3.5 mounting screws
-        spk.mountingHolesPerConnector.forEach((mh) => {
-          const screwMesh = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.0018, 0.0018, 0.004, 12).rotateX(Math.PI / 2),
-            silverScrewMat
-          );
-          screwMesh.position.set(mh.xMm * scale, mh.yMm * scale, -0.002);
-          dishGroup.add(screwMesh);
-        });
-
       } else if (spk.connectorModel === 'active_plate_xlr') {
-        // --- STUDIO ACTIVE RECESSED ALUMINUM SUB-PLATE (COMBO XLR/TRS + IEC INLET) ---
         const xlrBodyMat = new THREE.MeshStandardMaterial({
           color: '#1e293b',
           metalness: 0.6,
           roughness: 0.35,
           clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
         });
-        const silverTabMat = new THREE.MeshStandardMaterial({
-          color: '#cbd5e1',
-          metalness: 0.95,
-          roughness: 0.2,
-          clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
-        });
-
-        // 2× Balanced XLR/TRS Combo Jacks (Input + Thru)
-        [-0.024, 0.024].forEach((cx, cIdx) => {
-          const xlrSub = new THREE.Group();
-          xlrSub.position.set(cx, 0.032, -0.002);
-
+        const xOff = Math.min(0.022, dishCutW * 0.24);
+        [-xOff, xOff].forEach((cx) => {
           const barrel = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.011, 0.011, 0.01, 24).rotateX(Math.PI / 2),
+            new THREE.CylinderGeometry(0.009, 0.009, 0.008, 20).rotateX(Math.PI / 2),
             xlrBodyMat
           );
-          barrel.position.z = -0.003;
-          xlrSub.add(barrel);
-
-          const innerHole = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.0032, 0.0032, 0.008, 16).rotateX(Math.PI / 2),
-            silverScrewMat
-          );
-          innerHole.position.z = -0.006;
-          xlrSub.add(innerHole);
-
-          const pushTab = new THREE.Mesh(
-            new THREE.BoxGeometry(0.006, 0.004, 0.003),
-            silverTabMat
-          );
-          pushTab.position.set(0, 0.011, -0.004);
-          xlrSub.add(pushTab);
-
-          dishGroup.add(xlrSub);
+          barrel.position.set(cx, dishCutH * 0.2, -0.005);
+          dishGroup.add(barrel);
         });
 
-        // Rotary Level / Gain Potentiometer Knob
-        const knobMat = new THREE.MeshStandardMaterial({
-          color: '#0284c7',
-          metalness: 0.85,
-          roughness: 0.3,
-          clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
-        });
-        const potKnob = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.006, 0.006, 0.008, 16).rotateX(Math.PI / 2),
-          knobMat
-        );
-        potKnob.position.set(0, -0.008, -0.005);
-        dishGroup.add(potKnob);
-
-        // Schurter Fused IEC C14 AC Power Inlet
         const iecInlet = new THREE.Mesh(
-          new THREE.BoxGeometry(0.028, 0.022, 0.008),
+          new THREE.BoxGeometry(Math.min(0.026, dishCutW * 0.4), Math.min(0.018, dishCutH * 0.25), 0.006),
           xlrBodyMat
         );
-        iecInlet.position.set(0, -0.052, -0.003);
+        iecInlet.position.set(0, -dishCutH * 0.22, -0.004);
         dishGroup.add(iecInlet);
-
-        // 6 perimeter M3 mounting screws
-        spk.mountingHolesPerConnector.forEach((mh) => {
-          const screwMesh = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.0016, 0.0016, 0.004, 12).rotateX(Math.PI / 2),
-            silverScrewMat
-          );
-          screwMesh.position.set(mh.xMm * scale, mh.yMm * scale, -0.002);
-          dishGroup.add(screwMesh);
-        });
-
       } else {
-        // --- TOURING LIVE PA NEUTRIK SPEAKON NL4 / NL8 RECESSED STEEL DISH ---
-        const connSpacingM = spk.connectorSpacingCenterMm * scale;
+        const connSpacingM = Math.min(dishCutW * 0.44, spk.connectorSpacingCenterMm * scale);
         const xOffsets = spk.connectorQuantity === 2 ? [-connSpacingM / 2, connSpacingM / 2] : [0];
-        const flangeW = spk.flangeWidthMm * scale;
-        const flangeH = spk.flangeHeightMm * scale;
-        const boreR = (spk.cutoutBoreDiameterMm * scale) / 2;
+        const flangeW = Math.min(dishCutW * 0.42, spk.flangeWidthMm * scale);
+        const flangeH = Math.min(dishCutH * 0.72, spk.flangeHeightMm * scale);
+        const boreR = Math.min(flangeW * 0.42, (spk.cutoutBoreDiameterMm * scale) / 2);
 
         xOffsets.forEach((cx) => {
           const connSub = new THREE.Group();
-          connSub.position.set(cx, 0, -0.0015);
+          connSub.position.set(cx, 0, -0.003);
 
-          // D-Shape (26x31mm) or G-Shape Square (51.8x51.8mm) Flange
           const flangeMesh = new THREE.Mesh(
-            new THREE.BoxGeometry(flangeW, flangeH, 0.0035),
+            new THREE.BoxGeometry(flangeW, flangeH, 0.003),
             neutrikFlangeMat
           );
           connSub.add(flangeMesh);
 
-          // Circular locking barrel & keyway ring
-          const barrelGeo = new THREE.CylinderGeometry(boreR, boreR, 0.012, 24);
+          const barrelGeo = new THREE.CylinderGeometry(boreR, boreR, 0.01, 24);
           barrelGeo.rotateX(Math.PI / 2);
           const barrelMesh = new THREE.Mesh(barrelGeo, neutrikKeywayMat);
           barrelMesh.position.z = -0.004;
           connSub.add(barrelMesh);
 
-          // Center contact core
-          const coreGeo = new THREE.CylinderGeometry(boreR * 0.48, boreR * 0.48, 0.014, 20);
-          coreGeo.rotateX(Math.PI / 2);
-          const coreMesh = new THREE.Mesh(coreGeo, neutrikFlangeMat);
-          coreMesh.position.z = -0.0045;
-          connSub.add(coreMesh);
-
-          // M3 (diagonal 2-hole D-size) or M3.5 (4-corner G-size) mounting screws
-          spk.mountingHolesPerConnector.forEach((mh) => {
-            const screwGeo = new THREE.CylinderGeometry(
-              (mh.diameterMm * scale) / 2,
-              (mh.diameterMm * scale) / 2,
-              0.005,
-              12
-            );
-            screwGeo.rotateX(Math.PI / 2);
-            const screwMesh = new THREE.Mesh(screwGeo, silverScrewMat);
-            screwMesh.position.set(mh.xMm * scale, mh.yMm * scale, -0.002);
-            connSub.add(screwMesh);
-          });
-
-          // Rear NLFASTON 0.187" crimp terminal lugs projecting inside cabinet
           const lugCount = spk.poleCount;
           for (let p = 0; p < lugCount; p++) {
             const angle = (p / lugCount) * Math.PI * 2;
-            const lugR = boreR * 0.68;
+            const lugR = boreR * 0.65;
             const lugMesh = new THREE.Mesh(
-              new THREE.BoxGeometry(0.0048, 0.001, 0.014),
+              new THREE.BoxGeometry(0.004, 0.001, 0.01),
               goldMat
             );
             lugMesh.position.set(
               Math.cos(angle) * lugR,
               Math.sin(angle) * lugR,
-              dishPocketD + 0.007
+              dishPocketD + 0.005
             );
             connSub.add(lugMesh);
           }
@@ -1346,8 +2056,7 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
         });
       }
 
-      const dishPosY = spk.dishCenterYMm * scale;
-      const dishBasePos = new THREE.Vector3(0, dishPosY, -D / 2 - 0.001);
+      const dishBasePos = new THREE.Vector3(dishPosX, dishPosY, -D / 2);
       registerComponent(
         'speakon_terminal_dish',
         dishGroup,
@@ -1358,22 +2067,141 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
       );
     }
 
+    // 10C. PARAMETRIC REAR-PANEL THERMAL VENTILATION SLOTS & HERMETIC CONVECTIVE CHIMNEY (Scaled by Driver Pe Power Rating)
+    if (hasThermalVents && tvReport) {
+      const thermalVentGroup = new THREE.Group();
+
+      const bezelMat = new THREE.MeshStandardMaterial({
+        color: '#161b24',
+        metalness: 0.86,
+        roughness: 0.26,
+        clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+        wireframe: isWireframeMode,
+      });
+
+      const heatsinkFinMat = new THREE.MeshStandardMaterial({
+        color: '#b45309',
+        metalness: 0.88,
+        roughness: 0.30,
+        clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+        wireframe: isWireframeMode,
+      });
+
+      const coolIntakeGlowMat = new THREE.MeshStandardMaterial({
+        color: '#06b6d4',
+        emissive: '#0891b2',
+        emissiveIntensity: 0.55,
+        roughness: 0.25,
+        metalness: 0.5,
+        transparent: true,
+        opacity: 0.75,
+        clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+      });
+
+      const warmExhaustGlowMat = new THREE.MeshStandardMaterial({
+        color: '#f97316',
+        emissive: '#ea580c',
+        emissiveIntensity: 0.65,
+        roughness: 0.25,
+        metalness: 0.5,
+        transparent: true,
+        opacity: 0.78,
+        clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+      });
+
+      const buildLouverBankSubGroup = (
+        bankPos: { x: number; y: number },
+        slotCountInBank: number,
+        bankHM: number,
+        isExhaust: boolean
+      ) => {
+        const bankSub = new THREE.Group();
+        bankSub.position.set(bankPos.x, bankPos.y, 0);
+
+        // 1. Exterior CNC Bezel Trim Ring (Top, Bottom, Left, Right rails framing the slot array on exterior of panel_rear)
+        const railThick = 0.0045;
+        const railDepth = 0.0025;
+        const topRail = new THREE.Mesh(new THREE.BoxGeometry(tvBankWM, railThick, railDepth), bezelMat);
+        topRail.position.set(0, bankHM / 2 - railThick / 2, -railDepth / 2);
+        bankSub.add(topRail);
+
+        const botRail = new THREE.Mesh(new THREE.BoxGeometry(tvBankWM, railThick, railDepth), bezelMat);
+        botRail.position.set(0, -bankHM / 2 + railThick / 2, -railDepth / 2);
+        bankSub.add(botRail);
+
+        const leftRail = new THREE.Mesh(new THREE.BoxGeometry(railThick, bankHM, railDepth), bezelMat);
+        leftRail.position.set(-tvBankWM / 2 + railThick / 2, 0, -railDepth / 2);
+        bankSub.add(leftRail);
+
+        const rightRail = new THREE.Mesh(new THREE.BoxGeometry(railThick, bankHM, railDepth), bezelMat);
+        rightRail.position.set(tvBankWM / 2 - railThick / 2, 0, -railDepth / 2);
+        bankSub.add(rightRail);
+
+        // 2. Individual Angled Aerodynamic Louver Blades & Convective Streamline Guides inside each CNC slot
+        const flowMat = isExhaust ? warmExhaustGlowMat : coolIntakeGlowMat;
+        for (let i = 0; i < slotCountInBank; i++) {
+          const sy = (i - (slotCountInBank - 1) / 2) * tvPitchM;
+
+          // Angled aluminum louver blade inside the slot thickness
+          const bladeMesh = new THREE.Mesh(
+            new THREE.BoxGeometry(tvSlotWM - 0.002, 0.0016, t * 0.72),
+            bezelMat
+          );
+          bladeMesh.position.set(0, sy, t * 0.5);
+          bladeMesh.rotation.x = isExhaust ? -0.28 : 0.28;
+          bankSub.add(bladeMesh);
+
+          // Convective thermal airflow indicator bar at exterior slot mouth
+          const flowRim = new THREE.Mesh(
+            new THREE.BoxGeometry(tvSlotWM * 0.86, tvSlotHM * 0.34, 0.0022),
+            flowMat
+          );
+          flowRim.position.set(0, sy, -0.0012);
+          bankSub.add(flowRim);
+        }
+
+        // 3. Internal Hermetic Finned Aluminum Heat-Exchanger Collector (Preserves 100% Acoustic Box Seal)
+        if (tvReport.hasInternalHermeticHeatExchanger) {
+          const plenumDepth = 0.009;
+          const plenumBackPlate = new THREE.Mesh(
+            new THREE.BoxGeometry(tvBankWM - 0.002, bankHM - 0.002, 0.0025),
+            bezelMat
+          );
+          plenumBackPlate.position.set(0, 0, t + plenumDepth);
+          bankSub.add(plenumBackPlate);
+
+          const finCount = Math.max(4, Math.min(9, Math.floor((tvBankWM - 0.01) / 0.009)));
+          const finSpanW = tvBankWM - 0.012;
+          for (let f = 0; f < finCount; f++) {
+            const fx = finCount > 1 ? -finSpanW / 2 + (finSpanW * f) / (finCount - 1) : 0;
+            const finMesh = new THREE.Mesh(
+              new THREE.BoxGeometry(0.0016, bankHM - 0.006, plenumDepth),
+              heatsinkFinMat
+            );
+            finMesh.position.set(fx, 0, t + plenumDepth / 2);
+            bankSub.add(finMesh);
+          }
+        }
+
+        return bankSub;
+      };
+
+      thermalVentGroup.add(buildLouverBankSubGroup(tvIntakeBankPos, tvIntakeCount, tvIntakeBankHM, false));
+      thermalVentGroup.add(buildLouverBankSubGroup(tvExhaustBankPos, tvExhaustCount, tvExhaustBankHM, true));
+
+      registerComponent(
+        'thermal_vent_assembly',
+        thermalVentGroup,
+        new THREE.Vector3(0, 0, -D / 2),
+        new THREE.Vector3(0, 0, -1),
+        explDistBase * 1.45,
+        false
+      );
+    }
+
     // --- 10.5 PROCEDURAL ARCHETYPE HARDWARE GENERATION ---
-    const categoryKey: SpeakerCategory = dimensions.category || 'studio_monitor';
-    const catSpec = CATEGORY_SPECS[categoryKey] || CATEGORY_SPECS.studio_monitor;
-    const hwConfig: CategoryHardwareConfig = {
-      showHandles: dimensions.hardware?.showHandles ?? catSpec.defaultHardware.showHandles,
-      showPoleMount: dimensions.hardware?.showPoleMount ?? catSpec.defaultHardware.showPoleMount,
-      showCornerProtectors: dimensions.hardware?.showCornerProtectors ?? catSpec.defaultHardware.showCornerProtectors,
-      showIsolationFeet: dimensions.hardware?.showIsolationFeet ?? catSpec.defaultHardware.showIsolationFeet,
-    };
-
-    // A. Recessed Side Carry Handles
-    if (hwConfig.showHandles) {
-      const handleH = Math.min(0.20, H * 0.35);
-      const handleW = Math.min(0.14, (D - baffleT) * 0.45);
-      const handlePocketDepth = 0.038;
-
+    // A. Recessed Side Carry Handles (Aligned with CNC Side Panel Cutouts & Clear of Window Brace)
+    if (hwConfig.showHandles && handleYOffsets.length > 0) {
       const createHandleAssembly = (side: 'left' | 'right') => {
         const hGroup = new THREE.Group();
         const metalMat = new THREE.MeshStandardMaterial({
@@ -1391,26 +2219,30 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
           wireframe: isWireframeMode,
         });
 
+        const inwardSign = side === 'left' ? 1 : -1;
+        // Outer flange sits on exterior side face
         const flange = new THREE.Mesh(new THREE.BoxGeometry(0.003, handleH, handleW), metalMat);
+        flange.position.x = -inwardSign * 0.0015;
         hGroup.add(flange);
 
-        const pocket = new THREE.Mesh(new THREE.BoxGeometry(handlePocketDepth, handleH * 0.82, handleW * 0.82), metalMat);
-        pocket.position.x = side === 'left' ? handlePocketDepth / 2 : -handlePocketDepth / 2;
+        // Recessed pocket passes cleanly through the handleCutH x handleCutW cutout in panel_left / panel_right
+        const pocket = new THREE.Mesh(
+          new THREE.BoxGeometry(handlePocketDepth, handleCutH - 0.002, handleCutW - 0.002),
+          metalMat
+        );
+        pocket.position.x = inwardSign * (handlePocketDepth / 2);
         hGroup.add(pocket);
 
-        const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, handleW * 0.65, 16), barMat);
+        const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, (handleCutW - 0.006) * 0.8, 16), barMat);
         bar.rotation.x = Math.PI / 2;
-        bar.position.x = side === 'left' ? 0.012 : -0.012;
+        bar.position.x = inwardSign * (handlePocketDepth * 0.45);
         hGroup.add(bar);
 
         return hGroup;
       };
 
-      const isDualHandle = categoryKey === 'live_sub' && H >= 0.65;
-      const yOffsets = isDualHandle ? [H * 0.18, -H * 0.18] : [0];
-
       const leftHandlesGroup = new THREE.Group();
-      yOffsets.forEach((yOff) => {
+      handleYOffsets.forEach((yOff) => {
         const hMesh = createHandleAssembly('left');
         hMesh.position.y = yOff;
         leftHandlesGroup.add(hMesh);
@@ -1418,14 +2250,14 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
       registerComponent(
         'hardware_handle_left',
         leftHandlesGroup,
-        new THREE.Vector3(-W / 2 + 0.001, 0, -baffleT / 2),
+        new THREE.Vector3(-W / 2, 0, -baffleT / 2),
         new THREE.Vector3(-1, 0, 0),
         explDistBase * 1.05,
         false
       );
 
       const rightHandlesGroup = new THREE.Group();
-      yOffsets.forEach((yOff) => {
+      handleYOffsets.forEach((yOff) => {
         const hMesh = createHandleAssembly('right');
         hMesh.position.y = yOff;
         rightHandlesGroup.add(hMesh);
@@ -1433,14 +2265,14 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
       registerComponent(
         'hardware_handle_right',
         rightHandlesGroup,
-        new THREE.Vector3(W / 2 - 0.001, 0, -baffleT / 2),
+        new THREE.Vector3(W / 2, 0, -baffleT / 2),
         new THREE.Vector3(1, 0, 0),
         explDistBase * 1.05,
         false
       );
     }
 
-    // B. 35mm Bottom Pole-Mount Socket (Live Top / Sub Extension)
+    // B. 35mm Bottom Pole-Mount Socket (Mounted through panel_bottom 38mm CNC Bore & Clamped Below Slot Port / Woofer)
     if (hwConfig.showPoleMount) {
       const poleCupGroup = new THREE.Group();
       const cupMat = new THREE.MeshStandardMaterial({
@@ -1451,32 +2283,49 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
         wireframe: isWireframeMode,
       });
 
+      // Compute maximum safe internal projection above -H/2 so socket never hits bottom slot port or lowest driver
+      let maxInternalSocketH = 0.055;
+      if (hasBottomSlotPort && portComp) {
+        const slotFloorClearM = Math.max(0.012, (portComp.slotHeightMm || acoustics.slotHeightMm || 45) * scale * 0.45);
+        maxInternalSocketH = Math.min(maxInternalSocketH, t + slotFloorClearM);
+      }
+      frontDrivers.forEach((drv) => {
+        const drvBottomY = (drv.centerY - drv.cutoutRadiusMm) * scale;
+        const availFromBottomM = (drvBottomY - (-H / 2)) - 0.012;
+        if (availFromBottomM > t) {
+          maxInternalSocketH = Math.min(maxInternalSocketH, availFromBottomM);
+        }
+      });
+      const socketH = Math.max(t + 0.008, maxInternalSocketH);
+
+      // Exterior flange collar sits flush against bottom exterior face (y = -0.002 relative to -H/2)
       const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.042, 0.004, 32), cupMat);
-      collar.position.y = -t / 2;
+      collar.position.y = -0.002;
       poleCupGroup.add(collar);
 
-      const socket = new THREE.Mesh(new THREE.CylinderGeometry(0.0175, 0.0175, 0.075, 32), cupMat);
-      socket.position.y = 0.02;
+      // Cylindrical 35mm socket (outer r = 17.5mm < 19mm panel_bottom cutout hole)
+      const socket = new THREE.Mesh(new THREE.CylinderGeometry(0.0175, 0.0175, socketH, 32), cupMat);
+      socket.position.y = socketH / 2;
       poleCupGroup.add(socket);
 
       const knob = new THREE.Mesh(
-        new THREE.BoxGeometry(0.016, 0.01, 0.022),
+        new THREE.BoxGeometry(0.016, 0.008, 0.022),
         new THREE.MeshStandardMaterial({ color: '#2b303d', metalness: 0.8, roughness: 0.35, clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [] })
       );
-      knob.position.set(0.038, -t / 2, 0);
+      knob.position.set(0.036, -0.004, 0);
       poleCupGroup.add(knob);
 
       registerComponent(
         'hardware_pole_cup',
         poleCupGroup,
-        new THREE.Vector3(0, -H / 2 + t / 2, -baffleT / 2),
+        new THREE.Vector3(0, -H / 2, poleWorldZ),
         new THREE.Vector3(0, -1, 0),
         explDistBase * 1.05,
         false
       );
     }
 
-    // C. Heavy-Duty Steel Corner Protectors
+    // C. Heavy-Duty Steel Corner Protectors (Mounted on exterior corners without penetrating interior cavity)
     if (hwConfig.showCornerProtectors) {
       const cornersGroup = new THREE.Group();
       const cornerMat = new THREE.MeshStandardMaterial({
@@ -1498,22 +2347,22 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
         ySigns.forEach((sy) => {
           zSigns.forEach((sz) => {
             const bracket = new THREE.Group();
-            const posX = sx * (W / 2);
-            const posY = sy * (H / 2);
-            const posZ = sz === 1 ? (D / 2) : (-D / 2);
+            const posX = sx * (W / 2 + legT / 2);
+            const posY = sy * (H / 2 + legT / 2);
+            const posZ = sz * (D / 2 + legT / 2);
 
-            const ball = new THREE.Mesh(new THREE.SphereGeometry(legT * 2.5, 12, 12), cornerMat);
+            const ball = new THREE.Mesh(new THREE.SphereGeometry(legT * 2.2, 12, 12), cornerMat);
             bracket.add(ball);
 
-            const lx = new THREE.Mesh(new THREE.BoxGeometry(legL, legT, legL * 0.6), cornerMat);
+            const lx = new THREE.Mesh(new THREE.BoxGeometry(legL, legT, legL * 0.5), cornerMat);
             lx.position.set(-sx * (legL / 2), 0, 0);
             bracket.add(lx);
 
-            const ly = new THREE.Mesh(new THREE.BoxGeometry(legT, legL, legL * 0.6), cornerMat);
+            const ly = new THREE.Mesh(new THREE.BoxGeometry(legT, legL, legL * 0.5), cornerMat);
             ly.position.set(0, -sy * (legL / 2), 0);
             bracket.add(ly);
 
-            const lz = new THREE.Mesh(new THREE.BoxGeometry(legL * 0.6, legT, legL), cornerMat);
+            const lz = new THREE.Mesh(new THREE.BoxGeometry(legL * 0.5, legT, legL), cornerMat);
             lz.position.set(0, 0, -sz * (legL / 2));
             bracket.add(lz);
 
@@ -1566,7 +2415,7 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
         aluRing.position.y = footH * 0.2;
         foot.add(aluRing);
 
-        foot.position.set(fx, -H / 2 - footH / 2, -baffleT / 2 + fz);
+        foot.position.set(fx, -H / 2 - footH / 2 - 0.0005, -baffleT / 2 + fz);
         feetGroup.add(foot);
       });
 
@@ -1580,13 +2429,9 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
       );
     }
 
-    // E. Commercial Plate Amplifier Chassis (for Active Powered Tops/Monitors)
-    const hasPlateAmp = !!results.subcategoryTelemetry?.hasPlateAmplifier || dimensions.subcategory === 'active_powered_biamp';
+    // E. Commercial Plate Amplifier Chassis (Mounted cleanly through CNC Rear Panel Cutout)
     if (hasPlateAmp) {
       const ampGroup = new THREE.Group();
-      const ampPlateW = Math.min(0.22, rearW * 0.72);
-      const ampPlateH = Math.min(0.32, rearH * 0.65);
-      const ampPlateDepth = 0.055; // 55mm internal chassis depth
 
       const aluBlackMat = new THREE.MeshStandardMaterial({
         color: '#1a1d24',
@@ -1612,12 +2457,16 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
         wireframe: isWireframeMode,
       });
 
-      // Front fascia flange on rear panel
+      // Front fascia flange on exterior of rear panel (z < 0 in ampGroup local coords)
       const faceFlange = new THREE.Mesh(new THREE.BoxGeometry(ampPlateW, ampPlateH, 0.003), aluBlackMat);
+      faceFlange.position.z = -0.002;
       ampGroup.add(faceFlange);
 
-      // Internal electronics enclosure chassis can
-      const chassisCan = new THREE.Mesh(new THREE.BoxGeometry(ampPlateW * 0.88, ampPlateH * 0.88, ampPlateDepth), aluBlackMat);
+      // Internal electronics enclosure chassis can passing cleanly through ampCutW x ampCutH cutout in panel_rear
+      const chassisCan = new THREE.Mesh(
+        new THREE.BoxGeometry(ampCutW - 0.002, ampCutH - 0.002, ampPlateDepth),
+        aluBlackMat
+      );
       chassisCan.position.z = ampPlateDepth / 2;
       ampGroup.add(chassisCan);
 
@@ -1626,37 +2475,35 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
       const finSpacing = (ampPlateW * 0.7) / numFins;
       for (let f = 0; f < numFins; f++) {
         const finX = -((numFins - 1) * finSpacing) / 2 + f * finSpacing;
-        const finMesh = new THREE.Mesh(new THREE.BoxGeometry(0.0025, ampPlateH * 0.5, 0.015), heatsinkFinMat);
-        finMesh.position.set(finX, ampPlateH * 0.15, -0.0075);
+        const finMesh = new THREE.Mesh(new THREE.BoxGeometry(0.0025, ampPlateH * 0.45, 0.012), heatsinkFinMat);
+        finMesh.position.set(finX, ampPlateH * 0.14, -0.0095);
         ampGroup.add(finMesh);
       }
 
       // Blue PowerCON AC mains connector
-      const powercon = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.008, 16).rotateX(Math.PI / 2), connectorMat);
-      powercon.position.set(-ampPlateW * 0.25, -ampPlateH * 0.28, -0.004);
+      const powercon = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 0.006, 16).rotateX(Math.PI / 2), connectorMat);
+      powercon.position.set(-ampPlateW * 0.24, -ampPlateH * 0.26, -0.006);
       ampGroup.add(powercon);
 
       // Balanced XLR Input & Thru jacks
       const xlrInput = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.011, 0.011, 0.008, 16).rotateX(Math.PI / 2),
+        new THREE.CylinderGeometry(0.009, 0.009, 0.006, 16).rotateX(Math.PI / 2),
         new THREE.MeshStandardMaterial({ color: '#94a3b8', metalness: 0.9, roughness: 0.2, clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [] })
       );
-      xlrInput.position.set(ampPlateW * 0.1, -ampPlateH * 0.28, -0.004);
+      xlrInput.position.set(ampPlateW * 0.08, -ampPlateH * 0.26, -0.006);
       ampGroup.add(xlrInput);
 
       const xlrThru = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.011, 0.011, 0.008, 16).rotateX(Math.PI / 2),
+        new THREE.CylinderGeometry(0.009, 0.009, 0.006, 16).rotateX(Math.PI / 2),
         new THREE.MeshStandardMaterial({ color: '#94a3b8', metalness: 0.9, roughness: 0.2, clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [] })
       );
-      xlrThru.position.set(ampPlateW * 0.28, -ampPlateH * 0.28, -0.004);
+      xlrThru.position.set(ampPlateW * 0.26, -ampPlateH * 0.26, -0.006);
       ampGroup.add(xlrThru);
 
-      // Position plate amplifier on lower half of rear panel
-      const ampY = -rearH * 0.12;
       registerComponent(
         'hardware_plate_amp',
         ampGroup,
-        new THREE.Vector3(0, ampY, -D / 2 + t / 2),
+        new THREE.Vector3(ampPosX, ampPosY, -D / 2),
         new THREE.Vector3(0, 0, -1),
         explDistBase * 1.1,
         false
@@ -1668,7 +2515,10 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
       layout.collisions.forEach((col) => {
         const comp = layout.components.find((c) => col.id.includes(c.id));
         if (comp) {
-          const ringR = comp.outerRadiusMm * scale;
+          const rawRingR = comp.outerRadiusMm
+            ? comp.outerRadiusMm * scale
+            : Math.max(0.02, ((comp.slotHeightMm || 45) * scale) / 2);
+          const ringR = isNaN(rawRingR) || rawRingR <= 0 ? 0.03 : rawRingR;
           const ringGeo = new THREE.RingGeometry(ringR * 0.98, ringR * 1.05, 32);
           const ringMat = new THREE.MeshBasicMaterial({
             color: 0xef4444,
@@ -1687,8 +2537,12 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
 
     // 12. 3D VISUAL AIRFLOW INTERFERENCE & PROXIMITY STRESS OVERLAY (Red-to-Yellow Gradient)
     if (acoustics.alignment === 'ported' && portComp && isAirflowStressVisible !== false) {
-      const maxAxialM = Math.max(0.05, D - baffleT - t - 0.035);
-      const portLengthM = Math.min(results.portLengthMm * scale, maxAxialM);
+      const maxAxialM = Math.max(
+        0.024,
+        Math.min(usableCavityDepthM * 0.54, usableCavityDepthM - (rearDampingReserveMm * scale) - 0.04)
+      );
+      const leg1Mm = results.parametricPort?.legLengthsMm?.[0] || results.portLengthMm;
+      const portLengthM = Math.min(leg1Mm * scale, maxAxialM);
       const isRearPort = portComp.panel === 'rear';
       const portMouthXM = portComp.centerX * scale;
       const portMouthYM = Math.max(-H / 2 + t + 0.02, Math.min(H / 2 - t - 0.02, portComp.centerY * scale));
@@ -1724,7 +2578,7 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
         frontDrivers.forEach((drv) => {
           const isW = drv.role === 'woofer';
           const magR = (isW ? woofer.magnetDiameterMm : drv.role === 'midrange' ? midrange.magnetDiameterMm : tweeter.magnetDiameterMm) * scale / 2;
-          const magRearZ = D / 2 - (drv.depthMm * scale);
+          const magRearZ = D / 2 - Math.min(drv.depthMm * scale, maxSafeDriverMountDepthM);
           const magFrontZ = magRearZ + ((isW ? woofer.magnetDepthMm : 30) * scale);
           const dx = px - drv.centerX * scale;
           const dy = py - drv.centerY * scale;
@@ -1736,11 +2590,10 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
           if (distM * 1000 < minDist) minDist = distM * 1000;
         });
         // 2. Window Brace
-        const braceY = -H * 0.05;
         const braceDistMm = Math.max(0, Math.abs(py - braceY) - t / 2) * 1000;
         if (braceDistMm < minDist) minDist = braceDistMm;
-        // 3. Opposing Wall
-        const wallZ = isRearPort ? (D / 2 - baffleT) : (-D / 2 + t);
+        // 3. Opposing Wall / Rear Damping Surface
+        const wallZ = isRearPort ? (D / 2 - baffleT) : (-D / 2 + t + foamThicknessM);
         const wallDistMm = Math.abs(pz - wallZ) * 1000;
         if (wallDistMm < minDist) minDist = wallDistMm;
 
@@ -1842,7 +2695,8 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
           maxAllowedR,
           innerR + flareExpM * Math.pow(ringIdx * 0.4 + 0.3, 1.25) + 0.012
         );
-        const ringGeo = new THREE.RingGeometry(ringR * 0.98, ringR * 1.02, 36);
+        const safeRingR = isNaN(ringR) || ringR <= 0.005 ? 0.025 : ringR;
+        const ringGeo = new THREE.RingGeometry(safeRingR * 0.98, safeRingR * 1.02, 36);
         const ringDist = getDistanceToObstaclesMm(portMouthXM, portMouthYM, ringZ);
         const ringStress = computeStressFromDist(ringDist);
         const ringColor = getStressGradientColor(ringStress);
@@ -2161,6 +3015,168 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
         )}
       </div>
 
+      {/* 1. ACOUSTIC AIRFLOW RELIEF APERTURE LEADER LINE & BILLBOARD OVERLAY */}
+      <svg
+        ref={airflowLeaderSvgRef}
+        className="absolute inset-0 w-full h-full pointer-events-none z-30 overflow-visible"
+        style={{ display: 'none' }}
+      >
+        <path
+          ref={airflowLeaderPathRef}
+          d=""
+          fill="none"
+          stroke="#06b6d4"
+          strokeWidth="1.5"
+          strokeDasharray="4 3"
+          className="opacity-90 drop-shadow-[0_0_6px_rgba(6,182,212,0.8)]"
+        />
+      </svg>
+
+      {/* Airflow Relief Aperture 3D Reticle */}
+      <div
+        ref={airflowReticleRef}
+        className="absolute -top-3 -left-3 pointer-events-none z-30 w-6 h-6 items-center justify-center"
+        style={{ display: 'none' }}
+      >
+        <div className="w-3 h-3 rounded-full bg-cyan-400 ring-4 ring-cyan-500/40 shadow-lg shadow-cyan-400/80 animate-pulse" />
+        <div className="absolute inset-0 border border-cyan-400/80 rounded-full" />
+      </div>
+
+      {/* Airflow Relief Aperture Pinned Billboard Card */}
+      <div
+        ref={airflowBadgeRef}
+        className="absolute top-0 left-0 pointer-events-auto z-30 w-[285px] bg-[#07131e]/95 border-2 border-cyan-500/80 rounded-xl p-3 shadow-2xl shadow-cyan-950/90 text-slate-200 font-sans backdrop-blur-md"
+        style={{ display: 'none' }}
+      >
+        <div className="space-y-2">
+          <div className="flex items-center justify-between pb-1.5 border-b border-cyan-900/60 gap-1.5">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="p-1 rounded bg-cyan-950 text-cyan-300 border border-cyan-500/60 shadow-sm shrink-0">
+                <Wind className="w-3.5 h-3.5 text-cyan-400" />
+              </span>
+              <div className="min-w-0">
+                <span className="font-mono font-bold text-[11px] text-cyan-200 block truncate">
+                  AIRFLOW RELIEF APERTURE
+                </span>
+                <span className="text-[9px] font-mono text-cyan-400/80 uppercase tracking-wider block">
+                  Acoustic Pressure Equalizer
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveChannelCallout((prev) => (prev === 'airflow' ? 'cable' : 'cable'))}
+              title="Show Cable Routing Only"
+              className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-900/90 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800 transition cursor-pointer"
+            >
+              Next →
+            </button>
+          </div>
+
+          <div>
+            <div className="text-[11px] font-semibold text-cyan-100 flex items-center justify-between">
+              <span>Primary Function:</span>
+              <span className="text-cyan-400 font-mono text-[10px]">Laminar Chamber Breathing</span>
+            </div>
+            <p className="text-[10px] text-slate-300 leading-relaxed mt-1">
+              Precision-radiused internal passage allows instantaneous, uncompressed air displacement between sub-cavities during driver excursion. Eliminates backpressure air damping on the woofer cone and prevents acoustic chuffing while retaining &gt;80% panel torsional rigidity.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1.5 bg-[#030910]/80 border border-cyan-900/60 p-1.5 rounded text-[10px] font-mono">
+            <div>
+              <span className="text-[8.5px] text-slate-400 block uppercase">Airflow Velocity</span>
+              <span className="text-cyan-300 font-bold">&lt; 3.2 m/s (Laminar)</span>
+            </div>
+            <div>
+              <span className="text-[8.5px] text-slate-400 block uppercase">Chuffing Risk</span>
+              <span className="text-emerald-400 font-bold">0.0% (Zero Drag)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. CABLE ROUTING CHANNEL LEADER LINE & BILLBOARD OVERLAY */}
+      <svg
+        ref={cableLeaderSvgRef}
+        className="absolute inset-0 w-full h-full pointer-events-none z-30 overflow-visible"
+        style={{ display: 'none' }}
+      >
+        <path
+          ref={cableLeaderPathRef}
+          d=""
+          fill="none"
+          stroke="#f59e0b"
+          strokeWidth="1.5"
+          strokeDasharray="4 3"
+          className="opacity-90 drop-shadow-[0_0_6px_rgba(245,158,11,0.8)]"
+        />
+      </svg>
+
+      {/* Cable Routing Channel 3D Reticle */}
+      <div
+        ref={cableReticleRef}
+        className="absolute -top-3 -left-3 pointer-events-none z-30 w-6 h-6 items-center justify-center"
+        style={{ display: 'none' }}
+      >
+        <div className="w-3 h-3 rounded-full bg-amber-400 ring-4 ring-amber-500/40 shadow-lg shadow-amber-400/80 animate-pulse" />
+        <div className="absolute inset-0 border border-amber-400/80 rounded-full" />
+      </div>
+
+      {/* Cable Routing Channel Pinned Billboard Card */}
+      <div
+        ref={cableBadgeRef}
+        className="absolute top-0 left-0 pointer-events-auto z-30 w-[285px] bg-[#191107]/95 border-2 border-amber-500/80 rounded-xl p-3 shadow-2xl shadow-amber-950/90 text-slate-200 font-sans backdrop-blur-md"
+        style={{ display: 'none' }}
+      >
+        <div className="space-y-2">
+          <div className="flex items-center justify-between pb-1.5 border-b border-amber-900/60 gap-1.5">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="p-1 rounded bg-amber-950 text-amber-300 border border-amber-500/60 shadow-sm shrink-0">
+                <Zap className="w-3.5 h-3.5 text-amber-400" />
+              </span>
+              <div className="min-w-0">
+                <span className="font-mono font-bold text-[11px] text-amber-200 block truncate">
+                  CABLE ROUTING CHANNEL
+                </span>
+                <span className="text-[9px] font-mono text-amber-400/80 uppercase tracking-wider block">
+                  Grommet-Decoupled Harness
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveChannelCallout((prev) => (prev === 'cable' ? 'airflow' : 'airflow'))}
+              title="Show Airflow Relief Only"
+              className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-900/90 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800 transition cursor-pointer"
+            >
+              Next →
+            </button>
+          </div>
+
+          <div>
+            <div className="text-[11px] font-semibold text-amber-100 flex items-center justify-between">
+              <span>Primary Function:</span>
+              <span className="text-amber-400 font-mono text-[10px]">Anti-Chafe Wire Isolation</span>
+            </div>
+            <p className="text-[10px] text-slate-300 leading-relaxed mt-1">
+              Dedicated CNC conduits routing high-current twisted-pair speaker wire harnesses (12-14 AWG OFC) from the rear crossover network & Speakon dish to front transducers. Fitted with silicone dampening grommets to eliminate mechanical buzz, wire rattle, and insulation abrasion under high SPL.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1.5 bg-[#0e0a04]/80 border border-amber-900/60 p-1.5 rounded text-[10px] font-mono">
+            <div>
+              <span className="text-[8.5px] text-slate-400 block uppercase">Mechanical Isolation</span>
+              <span className="text-emerald-400 font-bold">Silicone Grommet</span>
+            </div>
+            <div>
+              <span className="text-[8.5px] text-slate-400 block uppercase">Harness Wire Gauge</span>
+              <span className="text-amber-300 font-bold">12–14 AWG OFC</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* NON-OVERLAPPING TOP OVERLAY CONTAINER */}
       <div className="absolute top-3 inset-x-3 z-20 flex flex-col gap-2.5 pointer-events-none">
         {/* TOP BAR ROW: Left = Interactive Dimensions Pill | Right = Airflow/Vibration Stress & Export CAD */}
@@ -2208,6 +3224,78 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
               );
             })}
           </div>
+
+          {/* LIVE REFERENCE CALIBER SCORE (0-100) & BEFORE/AFTER DELTA HUD */}
+          {results.caliberReport && (
+            <div className="pointer-events-auto flex flex-wrap items-center gap-2 bg-[#090d16]/90 backdrop-blur-md px-3 py-1.5 rounded-xl border border-slate-800 shadow-xl font-mono text-xs tabular-nums">
+              <div className="flex items-center gap-1.5">
+                <ShieldCheck
+                  className={`w-3.5 h-3.5 shrink-0 ${
+                    results.caliberReport.overallScore >= 92
+                      ? 'text-emerald-400'
+                      : results.caliberReport.overallScore >= 82
+                      ? 'text-cyan-400'
+                      : 'text-amber-400'
+                  }`}
+                />
+                <span className="text-slate-400 text-[10px]">Caliber:</span>
+                <span
+                  className={`font-bold ${
+                    results.caliberReport.overallScore >= 92
+                      ? 'text-emerald-300'
+                      : results.caliberReport.overallScore >= 82
+                      ? 'text-cyan-300'
+                      : 'text-amber-300'
+                  }`}
+                >
+                  {results.caliberReport.overallScore.toFixed(1)}/100
+                </span>
+                <span className="text-slate-600">·</span>
+                <span className="text-[10.5px] text-slate-300 font-medium">
+                  {results.caliberReport.gradeLabel}
+                </span>
+              </div>
+
+              {lastCaliberDelta && (
+                <>
+                  <span className="text-slate-700">|</span>
+                  <div className="flex items-center gap-1.5 text-[10.5px]">
+                    <span
+                      className={`font-bold ${
+                        lastCaliberDelta.deltaScore >= 0 ? 'text-emerald-300' : 'text-amber-300'
+                      }`}
+                    >
+                      {lastCaliberDelta.previousScore.toFixed(1)} → {lastCaliberDelta.currentScore.toFixed(1)} (
+                      {lastCaliberDelta.deltaScore >= 0
+                        ? `+${lastCaliberDelta.deltaScore.toFixed(1)}`
+                        : lastCaliberDelta.deltaScore.toFixed(1)}
+                      )
+                    </span>
+                    {lastCaliberDelta.coOptimizedActions.length > 0 && (
+                      <span className="hidden xl:inline text-cyan-300 truncate max-w-[240px]">
+                        · {lastCaliberDelta.coOptimizedActions[0]}
+                      </span>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {onToggleCoOpt && (
+                <button
+                  type="button"
+                  onClick={onToggleCoOpt}
+                  title="Toggle Live Closed-Loop Multiphysics Co-Optimization"
+                  className={`ml-1 px-2 py-0.5 rounded-md border text-[10px] font-bold transition cursor-pointer whitespace-nowrap ${
+                    coOptConfig?.enabled !== false
+                      ? 'bg-emerald-950/90 border-emerald-500/70 text-emerald-200'
+                      : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Co-Opt: {coOptConfig?.enabled !== false ? 'LIVE' : 'MANUAL'}
+                </button>
+              )}
+            </div>
+          )}
 
           {/* RIGHT CONTROLS: Compact Viewport Overlay Toggles & CAD Export */}
           <div className="flex flex-wrap items-center justify-end gap-1.5 ml-auto pointer-events-auto">
@@ -2691,6 +3779,65 @@ export const AcousticCADViewer: React.FC<AcousticCADViewerProps> = ({
             >
               Wireframe
             </button>
+            <button
+              type="button"
+              onClick={() => setShowInternalChannels((prev) => !prev)}
+              title="Toggle Internal Panel Hole Indicators (Airflow Relief & Cable Routing Channels)"
+              className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer border ${
+                showInternalChannels
+                  ? 'bg-sky-950 border-sky-400 text-sky-200 shadow-sm shadow-sky-950'
+                  : 'bg-slate-900/70 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              }`}
+            >
+              <Radio className="w-3 h-3 text-sky-400" />
+              <span>Channels</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setDimensions?.((prev) => {
+                  const currentlyOn = Boolean(
+                    prev.thermalVentConfig?.enabled !== undefined
+                      ? prev.thermalVentConfig.enabled
+                      : prev.hardware?.showThermalVentSlots
+                  );
+                  const nextState = !currentlyOn;
+                  return {
+                    ...prev,
+                    hardware: {
+                      ...(prev.hardware || {
+                        showHandles: false,
+                        showPoleMount: false,
+                        showCornerProtectors: false,
+                        showIsolationFeet: true,
+                      }),
+                      showThermalVentSlots: nextState,
+                    },
+                    thermalVentConfig: {
+                      ...(prev.thermalVentConfig || {}),
+                      enabled: nextState,
+                    },
+                  };
+                });
+              }}
+              title={
+                results.thermalVentReport
+                  ? `Toggle Parametric Rear-Panel Thermal Ventilation Slots (${results.thermalVentReport.slotCount}x slots scaled for ${results.thermalVentReport.driverContinuousPowerW}W RMS driver rating, -${results.thermalVentReport.voiceCoilTempDropC}°C voice-coil cooling)`
+                  : 'Toggle Parametric Rear-Panel Thermal Ventilation Slots'
+              }
+              className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer border ${
+                results.thermalVentReport?.enabled
+                  ? 'bg-orange-950 border-orange-400 text-orange-200 shadow-sm shadow-orange-950'
+                  : 'bg-slate-900/70 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              }`}
+            >
+              <Flame className="w-3 h-3 text-orange-400" />
+              <span>
+                {results.thermalVentReport?.enabled
+                  ? `Vents (${results.thermalVentReport.slotCount}x • ${results.thermalVentReport.driverContinuousPowerW}W)`
+                  : 'Thermal Vents'}
+              </span>
+            </button>
           </div>
 
           {/* Exploded View Slider Pill */}
@@ -2721,13 +3868,19 @@ function build3DDriverAssembly(
   scale: number,
   isCutawayMode: boolean,
   clipPlaneRef: React.MutableRefObject<THREE.Plane>,
-  isCoaxial: boolean = false
+  isCoaxial: boolean = false,
+  maxAllowedMountDepthM: number = 0.5,
+  baffleT: number = 0.018
 ): THREE.Group {
   const driverGroup = new THREE.Group();
   const frameOuterR = (drv.frameOuterDiameterMm * scale) / 2;
-  const frameMountDepth = drv.mountingDepthMm * scale;
-  const magnetR = (drv.magnetDiameterMm * scale) / 2;
-  const magnetD = drv.magnetDepthMm * scale;
+  const cutoutR = Math.max(0.016, (drv.cutoutDiameterMm * scale) / 2 - 0.002);
+  const frameMountDepth = Math.max(baffleT + 0.02, Math.min(drv.mountingDepthMm * scale, maxAllowedMountDepthM));
+  const rawMagnetR = (drv.magnetDiameterMm * scale) / 2;
+  // If magnet is wider than cutoutR, it must sit behind the inner face of the front baffle (-baffleT)
+  const magnetR = rawMagnetR > cutoutR ? Math.min(rawMagnetR, frameOuterR * 0.92) : rawMagnetR;
+  const maxMagnetDepthBehindBaffle = Math.max(0.012, frameMountDepth - baffleT - 0.004);
+  const magnetD = Math.min(drv.magnetDepthMm * scale, frameMountDepth * 0.48, maxMagnetDepthBehindBaffle);
 
   const aluminumMat = new THREE.MeshStandardMaterial({
     color: '#1a1c20',
@@ -2736,28 +3889,44 @@ function build3DDriverAssembly(
     clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
   });
 
+  // Outer mounting flange sits flush on the exterior face of baffle_front (z in [0, +0.008])
+  const flangeThickness = 0.008;
   const flangeMesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(frameOuterR, frameOuterR, 0.008, 36).rotateX(Math.PI / 2),
+    new THREE.CylinderGeometry(frameOuterR, frameOuterR, flangeThickness, 36).rotateX(Math.PI / 2),
     aluminumMat
   );
+  flangeMesh.position.z = flangeThickness / 2;
   driverGroup.add(flangeMesh);
 
-  const rollR = frameOuterR * 0.78;
-  const tubeR = (frameOuterR - rollR) * 0.85;
+  const rollR = Math.min(frameOuterR * 0.78, cutoutR * 0.94);
+  const tubeR = Math.max(0.003, (frameOuterR - rollR) * 0.55);
   const surroundMesh = new THREE.Mesh(
     new THREE.TorusGeometry(rollR, tubeR, 16, 40),
-    new THREE.MeshStandardMaterial({ color: '#111214', roughness: 0.85, metalness: 0.05, clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [] })
+    new THREE.MeshStandardMaterial({
+      color: '#111214',
+      roughness: 0.85,
+      metalness: 0.05,
+      clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+    })
   );
-  surroundMesh.position.z = 0.003;
+  surroundMesh.position.z = flangeThickness * 0.75;
   driverGroup.add(surroundMesh);
 
   const coneTex = createConeTexture();
-  const coneTopR = rollR - tubeR;
-  const coneBotR = (drv.voiceCoilDiameterMm * scale) / 2;
+  // Cone top radius fits strictly inside the CNC baffle bore (cutoutR)
+  const coneTopR = Math.min(rollR - tubeR * 0.5, cutoutR - 0.002);
+  const coneBotR = Math.min(coneTopR * 0.65, (drv.voiceCoilDiameterMm * scale) / 2);
   const coneDepth = frameMountDepth * 0.45;
   const coneMesh = new THREE.Mesh(
     new THREE.CylinderGeometry(coneTopR, coneBotR, coneDepth, 32, 1, true).rotateX(-Math.PI / 2),
-    new THREE.MeshStandardMaterial({ map: coneTex, color: '#252830', roughness: 0.4, metalness: 0.35, side: THREE.DoubleSide, clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [] })
+    new THREE.MeshStandardMaterial({
+      map: coneTex,
+      color: '#252830',
+      roughness: 0.4,
+      metalness: 0.35,
+      side: THREE.DoubleSide,
+      clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+    })
   );
   coneMesh.position.z = -coneDepth / 2;
   driverGroup.add(coneMesh);
@@ -2775,7 +3944,7 @@ function build3DDriverAssembly(
         side: THREE.DoubleSide,
         clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
       })
-    );
+    )
     throatMesh.position.z = -coneDepth * 0.75;
     driverGroup.add(throatMesh);
 
@@ -2789,33 +3958,51 @@ function build3DDriverAssembly(
         clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
       })
     );
-    bulletMesh.position.z = -coneDepth * 0.72 + (throatDepth * 0.4);
+    bulletMesh.position.z = -coneDepth * 0.72 + throatDepth * 0.4;
     driverGroup.add(bulletMesh);
   } else {
     // Standard Dust Cap
-    const dustCapR = coneBotR * 1.35;
+    const dustCapR = Math.min(coneTopR * 0.85, coneBotR * 1.35);
     const dustCapMesh = new THREE.Mesh(
       new THREE.SphereGeometry(dustCapR, 24, 14, 0, Math.PI * 2, 0, Math.PI * 0.55).rotateX(Math.PI / 2),
-      new THREE.MeshStandardMaterial({ color: '#181a1e', roughness: 0.3, metalness: 0.5, clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [] })
+      new THREE.MeshStandardMaterial({
+        color: '#181a1e',
+        roughness: 0.3,
+        metalness: 0.5,
+        clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+      })
     );
     dustCapMesh.position.z = -coneDepth * 0.75 + dustCapR * 0.4;
     driverGroup.add(dustCapMesh);
   }
 
+  // Basket struts pass strictly inside the cutout bore (radius <= cutoutR - 0.007)
+  const legRadialCenter = Math.max(0.01, Math.min(frameOuterR * 0.55, cutoutR - 0.008));
+  const legLength = Math.max(0.015, frameMountDepth - magnetD);
   for (let s = 0; s < 4; s++) {
     const angle = (s * Math.PI) / 2 + Math.PI / 4;
-    const legMesh = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.008, frameMountDepth * 0.65), aluminumMat);
-    legMesh.position.set(Math.cos(angle) * (frameOuterR * 0.55), Math.sin(angle) * (frameOuterR * 0.55), -frameMountDepth * 0.35);
+    const legMesh = new THREE.Mesh(new THREE.BoxGeometry(0.010, 0.007, legLength), aluminumMat);
+    legMesh.position.set(
+      Math.cos(angle) * legRadialCenter,
+      Math.sin(angle) * legRadialCenter,
+      -legLength / 2
+    );
     legMesh.rotation.z = angle;
     driverGroup.add(legMesh);
   }
 
   const magnetMesh = new THREE.Mesh(
     new THREE.CylinderGeometry(magnetR, magnetR, magnetD, 32).rotateX(Math.PI / 2),
-    new THREE.MeshStandardMaterial({ color: '#2a2b2e', roughness: 0.5, metalness: 0.6, clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [] })
+    new THREE.MeshStandardMaterial({
+      color: '#2a2b2e',
+      roughness: 0.5,
+      metalness: 0.6,
+      clippingPlanes: isCutawayMode ? [clipPlaneRef.current] : [],
+    })
   );
   magnetMesh.position.z = -frameMountDepth + magnetD / 2;
   driverGroup.add(magnetMesh);
 
   return driverGroup;
 }
+

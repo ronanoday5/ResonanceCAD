@@ -130,13 +130,15 @@ export function resolvePartInspectionTarget(partId: string | null | undefined): 
     };
   }
 
-  // 7. Exterior Hardware (Handles, Pole Cup, Corner Guards, Feet)
-  if (id.startsWith('hardware_')) {
+  // 7. Exterior Hardware (Handles, Pole Cup, Corner Guards, Feet, Rear Thermal Ventilation Slots)
+  if (id.startsWith('hardware_') || id.includes('thermal_vent')) {
     return {
       partId,
       category: 'hardware',
-      categoryBadge: 'Enclosure Hardware',
-      partTitle: 'Handles, Pole Mount, Corner Guards & Feet',
+      categoryBadge: id.includes('thermal_vent') ? 'Rear Thermal Chimney' : 'Enclosure Hardware',
+      partTitle: id.includes('thermal_vent')
+        ? 'Parametric Rear Thermal Ventilation Slots (Driver Pe Scaled)'
+        : 'Handles, Pole Mount, Corner Guards & Feet',
       tab: 'dimensions',
       sectionId: 'section-hardware-rigging',
       accordionGroup: null,

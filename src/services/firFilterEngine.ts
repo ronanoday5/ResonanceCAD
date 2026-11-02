@@ -164,16 +164,25 @@ export function calculateFirSimulation(
   const ratioVsIirBiquad = multiplicationsPerSecond / iirMultiplicationsPerSecond;
 
   // 3. Generate Impulse Response Taps
+  const fcHigh = acoustics.topology === 'three_way' ? (acoustics.crossoverHighHz || 3500) : fc;
   const wooferTaps = generateFirTaps(N, fs, fc, 'lowpass', phaseMode, windowType);
-  const tweeterTaps = generateFirTaps(N, fs, fc, 'highpass', phaseMode, windowType);
+  const tweeterTaps = generateFirTaps(N, fs, fcHigh, 'highpass', phaseMode, windowType);
+
+  let midrangeTaps: number[] | undefined = undefined;
+  if (acoustics.topology === 'three_way') {
+    const midLpTaps = generateFirTaps(N, fs, fcHigh, 'lowpass', phaseMode, windowType);
+    const midHpTaps = generateFirTaps(N, fs, fc, 'highpass', phaseMode, windowType);
+    midrangeTaps = midLpTaps.map((v, idx) => (v + (midHpTaps[idx] || 0)) * 0.5);
+  }
 
   // Sample points for UI waveform visualization (subsample to ~128 points for responsive rendering)
   const sampleStride = Math.max(1, Math.floor(N / 128));
-  const impulseResponsePoints: { sample: number; woofer: number; tweeter: number }[] = [];
+  const impulseResponsePoints: { sample: number; woofer: number; midrange?: number; tweeter: number }[] = [];
   for (let i = 0; i < N; i += sampleStride) {
     impulseResponsePoints.push({
       sample: i,
       woofer: wooferTaps[i] || 0,
+      midrange: midrangeTaps ? (midrangeTaps[i] || 0) : undefined,
       tweeter: tweeterTaps[i] || 0,
     });
   }
@@ -234,7 +243,6 @@ export function calculateFirSimulation(
 
     // Group delay: IIR has a distinct resonance peak at the crossover frequency
     // tau_g = -d(phi)/d(omega)
-    const bandwidthQ = 0.707;
     const deltaF = Math.abs(f - fc) / fc;
     const iirPeakMs = (1.5 / fc) * 1000;
     const iirGroupDelayMs = (iirPeakMs / (1 + deltaF * deltaF * 8)) + (20 / f);
@@ -281,6 +289,7 @@ export function calculateFirSimulation(
     advisoryTitle,
     advisoryDescription,
     wooferTaps,
+    midrangeTaps,
     tweeterTaps,
     impulseResponsePoints,
     phaseResponsePoints,
@@ -330,11 +339,20 @@ export function formatFirStereoPresetJson(
       phaseMode: report.phaseMode,
       bulkLatencyMs: report.latencyMs,
       crossoverFrequencyHz: acoustics.crossoverLowHz || 2500,
+      crossoverHighFrequencyHz: acoustics.topology === 'three_way' ? (acoustics.crossoverHighHz || 3500) : undefined,
       wooferChannel: {
         role: 'Low-Pass / Woofer',
         driver: `${acoustics.driverAssignments.woofer.driver.brand} ${acoustics.driverAssignments.woofer.driver.model}`,
         coefficients: report.wooferTaps,
       },
+      midrangeChannel:
+        acoustics.topology === 'three_way' && report.midrangeTaps
+          ? {
+              role: 'Band-Pass / Midrange',
+              driver: `${acoustics.driverAssignments.midrange.driver.brand} ${acoustics.driverAssignments.midrange.driver.model}`,
+              coefficients: report.midrangeTaps,
+            }
+          : undefined,
       tweeterChannel: {
         role: 'High-Pass / Tweeter',
         driver: `${acoustics.driverAssignments.tweeter.driver.brand} ${acoustics.driverAssignments.tweeter.driver.model}`,

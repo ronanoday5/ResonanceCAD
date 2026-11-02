@@ -11,8 +11,26 @@ import type {
  * Calculates exact passive crossover network components (Inductors in mH, Capacitors in µF, Resistors in Ohms)
  * for Butterworth and Linkwitz-Riley alignments (1st through 4th order).
  */
-export function calculateCrossoverNetwork(acoustics: AcousticParameters): CrossoverNetworkResult {
-  const { topology, driverAssignments, crossoverLowHz, crossoverHighHz, lowPassOrder, lowPassType, highPassOrder, highPassType, midPassOrder, midPassType } = acoustics;
+export function calculateCrossoverNetwork(
+  acoustics: AcousticParameters,
+  baffleWidthMm: number = 330
+): CrossoverNetworkResult {
+  const {
+    topology,
+    driverAssignments,
+    crossoverLowHz,
+    crossoverHighHz,
+    lowPassOrder,
+    lowPassType,
+    highPassOrder,
+    highPassType,
+    midPassOrder,
+    midPassType,
+    enableZobelNetwork = true,
+    enableFsNotchTank = false,
+    enableBaffleStepComp = false,
+    enableCdHornBypass = false,
+  } = acoustics;
 
   const woofer = driverAssignments.woofer;
   const tweeter = driverAssignments.tweeter;
@@ -98,6 +116,7 @@ export function calculateCrossoverNetwork(acoustics: AcousticParameters): Crosso
   });
 
   // --- 3. MIDRANGE BAND-PASS FILTER (For 3-Way Systems) ---
+  let lpadMidrange = undefined;
   if (topology === 'three_way') {
     const rMid = midrange.impedanceOhm || 8;
     const mOrder = midPassOrder || 2;
@@ -138,6 +157,30 @@ export function calculateCrossoverNetwork(acoustics: AcousticParameters): Crosso
       midrangeBandPass.push(comp);
       allComponents.push(comp);
     });
+
+    if (midrange.attenuationDb > 0) {
+      lpadMidrange = calculateLPad(rMid, midrange.attenuationDb);
+      allComponents.push({
+        id: 'lpad_mid_r1',
+        name: 'Midrange L-Pad Series Resistor R1',
+        type: 'resistor',
+        valueFormatted: `${lpadMidrange.rSeriesOhm.toFixed(2)} Ω`,
+        valueNumeric: lpadMidrange.rSeriesOhm,
+        unit: 'Ω',
+        voltagePowerRating: '15W Non-Inductive Ceramic',
+        purpose: `Midrange series attenuation (-${midrange.attenuationDb}dB level match)`,
+      });
+      allComponents.push({
+        id: 'lpad_mid_r2',
+        name: 'Midrange L-Pad Parallel Resistor R2',
+        type: 'resistor',
+        valueFormatted: `${lpadMidrange.rParallelOhm.toFixed(2)} Ω`,
+        valueNumeric: lpadMidrange.rParallelOhm,
+        unit: 'Ω',
+        voltagePowerRating: '15W Non-Inductive Ceramic',
+        purpose: `Midrange parallel impedance compensation (-${midrange.attenuationDb}dB)`,
+      });
+    }
   }
 
   // --- 4. L-PAD ATTENUATOR RESISTOR CALCULATIONS ---
@@ -168,7 +211,7 @@ export function calculateCrossoverNetwork(acoustics: AcousticParameters): Crosso
 
   // --- 5. ZOBEL IMPEDANCE EQUALIZATION ---
   let zobelWoofer = undefined;
-  if (woofer.driver.leMh && woofer.driver.leMh > 0) {
+  if (enableZobelNetwork && woofer.driver.leMh && woofer.driver.leMh > 0) {
     const re = woofer.driver.reOhm || woofer.impedanceOhm * 0.75;
     const rZobel = 1.25 * re;
     const cZobelUf = ((woofer.driver.leMh * 1e-3) / (rZobel * rZobel)) * 1e6;
@@ -198,6 +241,89 @@ export function calculateCrossoverNetwork(acoustics: AcousticParameters): Crosso
     });
   }
 
+  // --- 6. MOTIONAL Fs RESONANCE CONJUGATE TANK ---
+  const reVal = woofer.driver.reOhm || rWoofer * 0.75;
+  const fsNotchWoofer = calculateMotionalConjugate(
+    woofer.driver.fs,
+    woofer.driver.qms,
+    woofer.driver.qes,
+    reVal
+  );
+  if (enableFsNotchTank) {
+    allComponents.push({
+      id: 'fs_notch_r',
+      name: 'Motional Fs Tank Resistor Rc',
+      type: 'resistor',
+      valueFormatted: `${fsNotchWoofer.rcOhm.toFixed(2)} Ω`,
+      valueNumeric: fsNotchWoofer.rcOhm,
+      unit: 'Ω',
+      voltagePowerRating: '25W Non-Inductive Wirewound',
+      purpose: `Damps fundamental resonance impedance peak at Fs = ${woofer.driver.fs}Hz`,
+    });
+    allComponents.push({
+      id: 'fs_notch_c',
+      name: 'Motional Fs Tank Capacitor Cc',
+      type: 'capacitor',
+      valueFormatted: `${fsNotchWoofer.ccUf.toFixed(1)} µF`,
+      valueNumeric: fsNotchWoofer.ccUf,
+      unit: 'µF',
+      voltagePowerRating: '100V Bipolar Electrolytic',
+      purpose: `Resonates with Lc at ${woofer.driver.fs}Hz to linearize impedance`,
+    });
+    allComponents.push({
+      id: 'fs_notch_l',
+      name: 'Motional Fs Tank Inductor Lc',
+      type: 'inductor',
+      valueFormatted: `${fsNotchWoofer.lcMh.toFixed(2)} mH`,
+      valueNumeric: fsNotchWoofer.lcMh,
+      unit: 'mH',
+      voltagePowerRating: '150W Laminated Steel Core',
+      purpose: `Parallel RLC conjugate tank inductor tuned to ${woofer.driver.fs}Hz`,
+    });
+  }
+
+  // --- 7. BAFFLE STEP COMPENSATION (BSC) CONTOUR SHELF ---
+  const baffleStepWoofer = calculateBaffleStepCompensation(baffleWidthMm, rWoofer, 4.5);
+  if (enableBaffleStepComp) {
+    allComponents.push({
+      id: 'bsc_l',
+      name: 'Baffle Step Contour Inductor L_bsc',
+      type: 'inductor',
+      valueFormatted: `${baffleStepWoofer.lBscMh.toFixed(2)} mH`,
+      valueNumeric: baffleStepWoofer.lBscMh,
+      unit: 'mH',
+      voltagePowerRating: '150W Air/Ferrite Core 14AWG',
+      purpose: `4π→2π diffraction transition shelf at f_step = ${baffleStepWoofer.fStepHz}Hz (${baffleWidthMm}mm baffle)`,
+    });
+    allComponents.push({
+      id: 'bsc_r',
+      name: 'Baffle Step Contour Resistor R_bsc',
+      type: 'resistor',
+      valueFormatted: `${baffleStepWoofer.rBscOhm.toFixed(2)} Ω`,
+      valueNumeric: baffleStepWoofer.rBscOhm,
+      unit: 'Ω',
+      voltagePowerRating: '20W Non-Inductive Ceramic',
+      purpose: `Sets 4.5dB mid-high contour shelf above ${baffleStepWoofer.fStepHz}Hz`,
+    });
+  }
+
+  // --- 8. CD HORN HF BYPASS CAPACITOR ---
+  const rSeriesForHorn = lpadTweeter ? lpadTweeter.rSeriesOhm : 3.3;
+  const cbUf = calculateCdHornBypassCapacitor(rSeriesForHorn, 3500);
+  const cdHornBypassTweeter = { cbUf, fMassBreakpointHz: 3500 };
+  if (enableCdHornBypass && cbUf > 0) {
+    allComponents.push({
+      id: 'cd_horn_cb',
+      name: 'CD Horn HF Bypass Capacitor Cb',
+      type: 'capacitor',
+      valueFormatted: `${cbUf.toFixed(2)} µF`,
+      valueNumeric: cbUf,
+      unit: 'µF',
+      voltagePowerRating: '400V Polypropylene Film & Foil',
+      purpose: 'Bypasses L-Pad series resistor above 3.5kHz to restore +6dB/oct CD horn mass-breakpoint roll-off',
+    });
+  }
+
   const estimatedPcbAreaCm2 = Math.round(allComponents.length * 18 + 40);
 
   return {
@@ -205,7 +331,11 @@ export function calculateCrossoverNetwork(acoustics: AcousticParameters): Crosso
     midrangeBandPass: topology === 'three_way' ? midrangeBandPass : undefined,
     wooferLowPass,
     lpadTweeter,
+    lpadMidrange,
     zobelWoofer,
+    fsNotchWoofer,
+    baffleStepWoofer,
+    cdHornBypassTweeter,
     allComponents,
     estimatedPcbAreaCm2,
   };
